@@ -1,0 +1,13 @@
+# Frontend & UI
+streamlit
+streamlit_timeline
+st_pages
+plotly
+pyvis
+
+# Data & Utilities
+python-dotenv
+httpx
+httpx-sse
+requests
+pandas
