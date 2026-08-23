@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import SearchType
-from typing import Dict
+from typing import Dict, List
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 
 # ===========================================================================================================================================================
@@ -142,6 +142,30 @@ def create_vector_indexes(driver, dimensions: int = 768) -> None:
         except Exception as e:
             logger.warning(f"Could not create vector index {index_name}: {e}")
 
+def create_fulltext_indexes(driver) -> None:
+    """Creates fulltext schema indexes for Question, Answer, Tag, and User nodes if they do not exist."""
+    indexes = [
+        ("Question_keyword_index", "Question", ["title", "body"]),
+        ("Answer_keyword_index", "Answer", ["body"]),
+        ("Tag_keyword_index", "Tag", ["name"]),
+        ("User_keyword_index", "User", ["display_name"]),
+    ]
+    for index_name, label, props in indexes:
+        props_str = ", ".join(f"n.{prop}" for prop in props)
+        cypher = f"""
+        CREATE FULLTEXT INDEX {index_name} IF NOT EXISTS
+        FOR (n:{label})
+        ON EACH [{props_str}]
+        """
+        try:
+            driver.query(cypher)
+        except Exception as e:
+            logger.warning(f"Could not create fulltext index {index_name}: {e}")
+
+# Alias for singular call convention
+create_fulltext_index = create_fulltext_indexes
+
+
 def create_constraints(driver) -> None:
     """Creates minimum necessary constraints for data integrity and traversal optimization."""
     driver.query(
@@ -163,6 +187,7 @@ def create_constraints(driver) -> None:
         "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE (s.id) IS UNIQUE"
     )
     create_vector_indexes(driver)
+    create_fulltext_indexes(driver)
 
 
 
