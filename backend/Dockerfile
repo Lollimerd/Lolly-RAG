@@ -6,7 +6,8 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app" \
-    UV_HTTP_TIMEOUT=300
+    UV_HTTP_TIMEOUT=300 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
@@ -19,7 +20,7 @@ RUN useradd --create-home --shell /bin/bash --uid "${UID}" appuser
 
 # Install dependencies into system Python environment using uv cache mount
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=requirements.txt,target=requirements.txt \
+    --mount=type=bind,source=backend/requirements.txt,target=requirements.txt \
     uv pip install --system -r requirements.txt
 
 # Create cache directories for HuggingFace and models, ensure appuser owns them so it can write models/logs

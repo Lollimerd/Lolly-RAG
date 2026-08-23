@@ -35,7 +35,7 @@ services:
       retries: 5
 
   graphDB:
-    container_name: lolly-rag-DB
+    container_name: lolly-DB
     image: neo4j:5.26
     pull_policy: missing
     ports:
