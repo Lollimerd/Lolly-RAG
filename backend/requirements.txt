@@ -2,6 +2,7 @@
 fastapi
 uvicorn[standard] # includes uvloop + httptools for better async performance
 pydantic
+python-multipart  # required for multipart/form-data file uploads
 
 # LangChain Ecosystem
 langchain>=1.0
@@ -9,6 +10,7 @@ langchain-core
 langchain-community
 langchain-neo4j
 langchain-ollama
+langchain-text-splitters  # document chunking for unstructured doc ingestion
 deepagents
 
 # Database & Graph
@@ -18,6 +20,10 @@ ollama
 # AI/ML & Embeddings
 sentence-transformers
 torch
+
+# Document Loaders (unstructured document ingestion)
+pypdf          # PDF loading via PyPDFLoader
+docx2txt       # DOCX loading via Docx2txtLoader
 
 # Data & Utilities
 python-dotenv

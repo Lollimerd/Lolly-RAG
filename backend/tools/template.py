@@ -1,130 +1,149 @@
+CYPHER_GENERATION_TEMPLATE = """Task: Generate an accurate Cypher query to retrieve relevant context from a StackOverflow developer knowledge graph in Neo4j.
 
-
-CYPHER_GENERATION_TEMPLATE = """Task: Generate a Cypher statement to query a StackOverflow knowledge graph.
-
-Instructions:
-- Use ONLY the relationship types and node properties defined in the schema below.
-- Output ONLY the raw Cypher statement — no explanation, no markdown, no apologies.
-- A Q&A pair is NOT required — you may retrieve Questions, Answers, Tags, or Users independently
-  based on what best fits the user's question.
-- Choose the most appropriate vector index from the 4 available options:
-    • 'Question_index'  — for conceptual, how-to, or general topic questions (searches Question nodes)
-    • 'Answer_index'    — for error messages, code snippets, or solution-focused queries (searches Answer nodes)
-    • 'Tag_index'       — for topic/technology browsing or "what questions exist about X" queries (searches Tag nodes)
-    • 'User_index'      — for finding expert users, contributors, or "who answered X" queries (searches User nodes)
-- ALWAYS start with a vector index search using `$question_embedding`. E.g.:
-    CALL db.index.vector.queryNodes('Question_index', 50, $question_embedding) YIELD node AS q, score
-- Use OPTIONAL MATCH for all supplementary relationships (answers, tags, users) so that
-  missing branches never eliminate otherwise valid results.
-- When traversing Question-Answer pairs, filter by shared community membership using:
-    ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId)
-  This ensures answers and questions belong to the same community cluster.
-- Prefer accepted or high-scoring answers (a.is_accepted = true OR a.score > 0) when answers are part of the query.
-- Limit results (LIMIT 25 is a good default).
-- Return enough fields for a rich answer: question title, question body, answer body,
-  answer score, whether the answer is accepted, relevant tag names, and vector search similarity score (`score`).
-- CRITICAL: In Cypher, if a query uses aggregation (such as `collect(DISTINCT...)`) in the `RETURN` clause, any variable used in the `ORDER BY` clause (like `score`) MUST be explicitly included in the `RETURN` clause. Make sure to project `score` in your `RETURN` statement if you order by it!
-
-Schema:
+Graph Schema:
 {schema}
 
-Examples:
+======================================================================
+STRICT INSTRUCTIONS & RULES:
+======================================================================
+1. OUTPUT FORMAT:
+   - Output ONLY the raw Cypher query statement.
+   - Do NOT include markdown code fences (no ```cypher or ```).
+   - Do NOT include any explanations, comments, greetings, or text before/after the query.
+   - Never generate mutating queries (NO CREATE, MERGE, SET, DELETE, DROP, DETACH).
 
-# Example 1: Find accepted answers for questions about a technical topic (e.g., Python async)
-# Use Question_index when the user is asking a conceptual or how-to question
+2. INDEX SELECTION (Always start with a Vector Search using `$question_embedding`):
+   Choose the best entry index based on the user's intent:
+   - 'Question_index' : For conceptual, "how-to", architectural, or broad topic questions (targets Question nodes).
+   - 'Answer_index'   : For error messages, stack traces, exceptions, code fixes, or specific solutions (targets Answer nodes).
+   - 'Tag_index'      : For technology overview, library exploration, or "what topics exist about X" (targets Tag nodes).
+   - 'User_index'     : For finding expert contributors or answers by specific users (targets User nodes).
+
+3. RELATIONSHIP TRAVERSAL & RESILIENCY:
+   - Question & Answer relationships:
+     (:User)-[:ASKED]->(:Question)
+     (:User)-[:PROVIDED]->(:Answer)
+     (:Answer)-[:ANSWERS]->(:Question)
+     (:Question)-[:TAGGED]->(:Tag)
+   - Use OPTIONAL MATCH for secondary relationships (answers, tags, users) so missing nodes do NOT eliminate valid results.
+   - When filtering by community clustering between questions and answers, use null-safe comparison:
+     (q.CommunityId IS NULL OR a.CommunityId IS NULL OR ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId))
+   - When answers are retrieved, prioritize accepted or positive-scoring answers (a.is_accepted = true OR a.score > 0).
+
+4. MANDATORY RETURN COLUMN ALIASES (CRITICAL FOR DOWNSTREAM RERANKER):
+   You MUST use these exact column aliases in the RETURN clause:
+   - `question_title` : Title of the question (e.g., q.title AS question_title)
+   - `question_body`  : Body content of the question (e.g., q.body AS question_body)
+   - `answer_body`    : Body content of the answer (e.g., a.body AS answer_body)
+   - `answer_score`   : Integer score of the answer (e.g., a.score AS answer_score)
+   - `is_accepted`    : Boolean accepted flag of the answer (e.g., a.is_accepted AS is_accepted)
+   - `tags`           : Distinct list of tag names (e.g., collect(DISTINCT t.name) AS tags)
+   - `answered_by`    : Display name of the answering user (e.g., u.display_name AS answered_by)
+   - `asked_by`       : Display name of the question author (e.g., u.display_name AS asked_by)
+   - `score`          : Vector similarity score yielded from index query (e.g., score)
+
+5. AGGREGATION & ORDERING:
+   - When using aggregations (like `collect(DISTINCT t.name)`), any variable referenced in `ORDER BY` MUST be included in `RETURN`.
+   - Always sort primarily by vector score: `ORDER BY score DESC` (and optionally `a.score DESC` or `q.score DESC`).
+   - Limit results appropriately (default `LIMIT 50`).
+
+======================================================================
+CYPHER EXAMPLES:
+======================================================================
+
+# Example 1: Conceptual or "How-To" Question (Searches Question_index with optional accepted/top answers)
 CALL db.index.vector.queryNodes('Question_index', 50, $question_embedding) YIELD node AS q, score
-MATCH (a:Answer)-[:ANSWERS]->(q:Question)
-WHERE ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId)
-  AND (a.is_accepted = true OR a.score > 0)
+OPTIONAL MATCH (a:Answer)-[:ANSWERS]->(q)
+  WHERE (q.CommunityId IS NULL OR a.CommunityId IS NULL OR ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId))
+    AND (a.is_accepted = true OR a.score > 0)
 OPTIONAL MATCH (q)-[:TAGGED]->(t:Tag)
 OPTIONAL MATCH (u:User)-[:PROVIDED]->(a)
-RETURN q.title          AS question_title,
-       q.body           AS question_body,
-       a.body           AS answer_body,
-       a.score          AS answer_score,
-       a.is_accepted    AS is_accepted,
+RETURN q.title                  AS question_title,
+       q.body                   AS question_body,
+       a.body                   AS answer_body,
+       a.score                  AS answer_score,
+       a.is_accepted            AS is_accepted,
        collect(DISTINCT t.name) AS tags,
-       u.display_name   AS answered_by,
+       u.display_name           AS answered_by,
        score
 ORDER BY score DESC, a.score DESC
 LIMIT 50
 
 
-# Example 2: Search by answer content — for error messages, stack traces, or code fix queries
-# Use Answer_index when the user pastes an error or asks about a specific solution/snippet
+# Example 2: Error Message, Code Trace, Exception, or Solution Search (Searches Answer_index)
 CALL db.index.vector.queryNodes('Answer_index', 50, $question_embedding) YIELD node AS a, score
 MATCH (q:Question)<-[:ANSWERS]-(a)
-WHERE ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId)
-  AND (a.is_accepted = true OR a.score > 0)
+WHERE (q.CommunityId IS NULL OR a.CommunityId IS NULL OR ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId))
 OPTIONAL MATCH (q)-[:TAGGED]->(t:Tag)
 OPTIONAL MATCH (u:User)-[:PROVIDED]->(a)
-RETURN q.title          AS question_title,
-       q.body           AS question_body,
-       a.body           AS answer_body,
-       a.score          AS answer_score,
-       a.is_accepted    AS is_accepted,
+RETURN q.title                  AS question_title,
+       q.body                   AS question_body,
+       a.body                   AS answer_body,
+       a.score                  AS answer_score,
+       a.is_accepted            AS is_accepted,
        collect(DISTINCT t.name) AS tags,
-       u.display_name   AS answered_by,
+       u.display_name           AS answered_by,
        score
 ORDER BY score DESC, a.score DESC
 LIMIT 50
 
-# Example 3: Filter by a specific tag or technology name for targeted topic search
-# Useful when the user explicitly mentions a technology (e.g., "in Docker", "using Python")
+
+# Example 3: Tag / Specific Technology Filtered Search (e.g., Docker, Python, Neo4j)
 CALL db.index.vector.queryNodes('Question_index', 50, $question_embedding) YIELD node AS q, score
-MATCH (a:Answer)-[:ANSWERS]->(q:Question)
-MATCH (q)-[:TAGGED]->(t:Tag)
-WHERE ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId)
-  AND (a.is_accepted = true OR a.score > 0)
-  AND t.name IN ['docker', 'python', 'linux']
+MATCH (q)-[:TAGGED]->(matchedTag:Tag)
+WHERE matchedTag.name IN ['docker', 'python', 'neo4j', 'fastapi']
+OPTIONAL MATCH (a:Answer)-[:ANSWERS]->(q)
+  WHERE (q.CommunityId IS NULL OR a.CommunityId IS NULL OR ANY(cid IN q.CommunityId WHERE cid IN a.CommunityId))
+    AND (a.is_accepted = true OR a.score > 0)
 OPTIONAL MATCH (q)-[:TAGGED]->(allTags:Tag)
 OPTIONAL MATCH (u:User)-[:PROVIDED]->(a)
-RETURN q.title          AS question_title,
-       q.body           AS question_body,
-       a.body           AS answer_body,
-       a.score          AS answer_score,
-       a.is_accepted    AS is_accepted,
+RETURN q.title                    AS question_title,
+       q.body                     AS question_body,
+       a.body                     AS answer_body,
+       a.score                    AS answer_score,
+       a.is_accepted              AS is_accepted,
        collect(DISTINCT allTags.name) AS tags,
-       u.display_name   AS answered_by,
+       u.display_name             AS answered_by,
        score
 ORDER BY score DESC, a.score DESC
 LIMIT 50
 
-# Example 4: Tag-first traversal — browse questions by topic WITHOUT requiring an answer match
-# Use Tag_index when the user asks "what topics/questions exist about X" or needs a broad overview
-# Questions without answers are still returned (OPTIONAL MATCH on answers)
+
+# Example 4: Topic & Library Exploration / Tag-First Search (Searches Tag_index)
 CALL db.index.vector.queryNodes('Tag_index', 20, $question_embedding) YIELD node AS t, score
 MATCH (q:Question)-[:TAGGED]->(t)
 OPTIONAL MATCH (a:Answer)-[:ANSWERS]->(q)
+  WHERE (a.is_accepted = true OR a.score > 0)
 OPTIONAL MATCH (u:User)-[:ASKED]->(q)
-RETURN q.title          AS question_title,
-       q.body           AS question_body,
-       q.score          AS question_score,
-       a.body           AS answer_body,
-       a.score          AS answer_score,
-       a.is_accepted    AS is_accepted,
-       t.name           AS tag,
-       u.display_name   AS asked_by,
+RETURN q.title                  AS question_title,
+       q.body                   AS question_body,
+       q.score                  AS question_score,
+       a.body                   AS answer_body,
+       a.score                  AS answer_score,
+       a.is_accepted            AS is_accepted,
+       t.name                   AS tag,
+       u.display_name           AS asked_by,
        score
 ORDER BY score DESC, q.score DESC
 LIMIT 50
 
-# Example 5: User-first traversal — find content from expert/high-reputation users
-# Use User_index when the user asks "who answered X" or wants to find contributions from specific users
+
+# Example 5: Expert User or Author Search (Searches User_index)
 CALL db.index.vector.queryNodes('User_index', 20, $question_embedding) YIELD node AS u, score
 OPTIONAL MATCH (u)-[:PROVIDED]->(a:Answer)-[:ANSWERS]->(q:Question)
-OPTIONAL MATCH (u)-[:ASKED]->(askedQ:Question)
 OPTIONAL MATCH (q)-[:TAGGED]->(t:Tag)
-RETURN u.display_name   AS user_name,
-       u.reputation     AS reputation,
-       q.title          AS question_title,
-       a.body           AS answer_body,
-       a.score          AS answer_score,
-       a.is_accepted    AS is_accepted,
+RETURN u.display_name           AS answered_by,
+       u.reputation             AS reputation,
+       q.title                  AS question_title,
+       q.body                   AS question_body,
+       a.body                   AS answer_body,
+       a.score                  AS answer_score,
+       a.is_accepted            AS is_accepted,
        collect(DISTINCT t.name) AS tags,
        score
 ORDER BY score DESC, u.reputation DESC
 LIMIT 50
 
-The question is:
+======================================================================
+Question to answer:
 {question}"""

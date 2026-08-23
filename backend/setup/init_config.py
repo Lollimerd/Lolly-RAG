@@ -118,12 +118,13 @@ import logging
 logger = logging.getLogger(__name__)
 
 def create_vector_indexes(driver, dimensions: int = 768) -> None:
-    """Creates vector schema indexes for Question, Answer, Tag, and User nodes if they do not exist."""
+    """Creates vector schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
     indexes = [
         ("Question_index", "Question", "q"),
         ("Answer_index", "Answer", "a"),
         ("Tag_index", "Tag", "t"),
         ("User_index", "User", "u"),
+        ("DocumentChunk_index", "DocumentChunk", "dc"),
     ]
     for index_name, label, var in indexes:
         cypher = f"""
@@ -143,12 +144,13 @@ def create_vector_indexes(driver, dimensions: int = 768) -> None:
             logger.warning(f"Could not create vector index {index_name}: {e}")
 
 def create_fulltext_indexes(driver) -> None:
-    """Creates fulltext schema indexes for Question, Answer, Tag, and User nodes if they do not exist."""
+    """Creates fulltext schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
     indexes = [
         ("Question_keyword_index", "Question", ["title", "body"]),
         ("Answer_keyword_index", "Answer", ["body"]),
         ("Tag_keyword_index", "Tag", ["name"]),
         ("User_keyword_index", "User", ["display_name"]),
+        ("DocumentChunk_keyword_index", "DocumentChunk", ["content", "source"]),
     ]
     for index_name, label, props in indexes:
         props_str = ", ".join(f"n.{prop}" for prop in props)
@@ -164,6 +166,30 @@ def create_fulltext_indexes(driver) -> None:
 
 # Alias for singular call convention
 create_fulltext_index = create_fulltext_indexes
+
+
+def create_text_indexes(driver) -> None:
+    """Creates text schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
+    indexes = [
+        ("Question_title_text_index", "Question", "title"),
+        ("Tag_name_text_index", "Tag", "name"),
+        ("User_display_name_text_index", "User", "display_name"),
+        ("DocumentChunk_source_text_index", "DocumentChunk", "source"),
+        ("Document_source_text_index", "Document", "source"),
+    ]
+    for index_name, label, prop in indexes:
+        cypher = f"""
+        CREATE TEXT INDEX {index_name} IF NOT EXISTS
+        FOR (n:{label})
+        ON (n.{prop})
+        """
+        try:
+            driver.query(cypher)
+        except Exception as e:
+            logger.warning(f"Could not create text index {index_name}: {e}")
+
+# Alias for singular call convention
+create_text_index = create_text_indexes
 
 
 def create_constraints(driver) -> None:
@@ -186,8 +212,16 @@ def create_constraints(driver) -> None:
     driver.query(
         "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE (s.id) IS UNIQUE"
     )
+    # Unstructured document ingestion constraints
+    driver.query(
+        "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE (d.id) IS UNIQUE"
+    )
+    driver.query(
+        "CREATE CONSTRAINT document_chunk_id IF NOT EXISTS FOR (c:DocumentChunk) REQUIRE (c.id) IS UNIQUE"
+    )
     create_vector_indexes(driver)
     create_fulltext_indexes(driver)
+    create_text_indexes(driver)
 
 
 

@@ -1,35 +1,129 @@
-import streamlit as st
+import gc
+import os
+import time
 import pandas as pd
 import plotly.express as px
+import requests
+import streamlit as st
+from streamlit.logger import get_logger
 
 from utils.ui_utils import (
+    BACKEND_URL,
+    delete_import_log_api,
+    display_container_name,
     get_database_summary,
     get_import_history,
-    display_container_name,
     update_import_log_api,
-    delete_import_log_api,
 )
 
+logger = get_logger(__name__)
+
 st.set_page_config(
-    page_title="StackExchange Import Dashboard",
+    page_title="Dashboard & Importer — Lolly-RAG",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        "Get Help": "https://www.extremelycoolapp.com/help",
-        "Report a bug": "https://www.extremelycoolapp.com/bug",
-        "About": "# This is a header. This is an *extremely* cool app!",
+        "Get Help": "https://www.google.com",
+        "Report a bug": "https://www.google.com",
+        "About": "# Lolly-RAG StackExchange Dashboard and Data Importer",
     },
 )
 
+# ---------------------------------------------------------------------------
+# StackExchange Loader Logic
+# ---------------------------------------------------------------------------
+so_api_base_url = "https://api.stackexchange.com/2.3/search/advanced"
 
-def render_page():
-    st.header("📊 StackExchange Import Dashboard")
+
+def load_so_data(tag: str, page: int, site: str) -> dict:
+    """
+    Load Stack Overflow data and handle potential errors gracefully.
+    Returns a dictionary indicating the result.
+    """
+    try:
+        api_key = os.getenv("STACKEXCHANGE_API_KEY")
+        key_param = f"&key={api_key}" if api_key else ""
+        site = "stackoverflow"
+        parameters = f"""?pagesize=100&page={page}&order=desc&sort=creation&answers=1&tagged={tag}&site={site}&filter=!*236eb_eL9rai)MOSNZ-6D3Q6ZKb0buI*IVotWaTb{key_param}"""
+
+        # Retry logic for network flakiness
+        max_retries = 3
+        data = None
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(so_api_base_url + parameters, stream=False)
+                response.raise_for_status()
+                data = response.json()
+                break  # Success
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    sleep_time = 2**attempt  # 1s, 2s, 4s...
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    raise last_exception or e
+
+        if not data:
+            raise last_exception or Exception("Failed to retrieve data after retries")
+
+        if "items" in data and data["items"]:
+            # Handle API backoff requests
+            if "backoff" in data:
+                time.sleep(data["backoff"])
+            elif "error_name" in data:
+                backoff_time = min(300, 2 ** (page % 8))  # Max 300 seconds
+                time.sleep(backoff_time)
+            insert_so_data(data)
+            return {
+                "status": "success",
+                "tag": tag,
+                "page": page,
+                "count": len(data["items"]),
+            }
+        else:
+            return {"status": "empty", "tag": tag, "page": page}
+
+    except requests.exceptions.RequestException as e:
+        return {
+            "status": "error",
+            "tag": tag,
+            "page": page,
+            "error": f"Network error: {e}",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "tag": tag,
+            "page": page,
+            "error": f"An unexpected error occurred: {e}",
+        }
+
+
+def insert_so_data(data: dict) -> None:
+    """Insert StackOverflow data into Neo4j via Backend API."""
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/ingest", json={"data": data["items"]}
+        )
+        response.raise_for_status()
+        res_json = response.json()
+        if res_json["status"] != "success":
+            logger.error(f"Ingest failed: {res_json.get('message')}")
+            st.error(f"Ingestion failed for a page: {res_json.get('message')}")
+    except Exception as e:
+        logger.error(f"Error posting ingestion data: {e}")
+        st.error(f"Failed to send data to backend: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Tab 1: Dashboard & Analytics Renderer
+# ---------------------------------------------------------------------------
+def _render_dashboard_tab():
     st.caption("Track your StackExchange data imports and database statistics")
-
-    # Display container status in sidebar
-    with st.sidebar:
-        display_container_name()
 
     # Get database summary
     try:
@@ -84,11 +178,10 @@ def render_page():
         with col2:
             last_import = summary.get("last_import")
             if last_import:
-                # Format the datetime for display
                 if hasattr(last_import, "strftime"):
                     formatted_date = last_import.strftime("%Y-%m-%d %H:%M")
                 else:
-                    formatted_date = str(last_import)[:16]  # Truncate if it's a string
+                    formatted_date = str(last_import)[:16]
                 st.metric(
                     label="🕒 Last Import",
                     value=formatted_date,
@@ -102,7 +195,6 @@ def render_page():
                 )
 
         with col3:
-            # Calculate average questions per import
             if total_imports > 0:
                 avg_questions = total_questions / total_imports
                 st.metric(
@@ -127,14 +219,11 @@ def render_page():
     st.subheader("📋 Import History")
 
     try:
-        # Get import history
         history = get_import_history(limit=50)
 
         if history:
-            # Convert to DataFrame for better display
             df = pd.DataFrame(history)
 
-            # Format timestamp for display
             if "timestamp" in df.columns:
                 df["formatted_time"] = df["timestamp"].apply(
                     lambda x: (
@@ -144,7 +233,6 @@ def render_page():
                     )
                 )
 
-            # Display as interactive editor
             edited_df = st.data_editor(
                 df[
                     ["id", "formatted_time", "site", "questions", "tags", "pages", "tags_list"]
@@ -159,10 +247,9 @@ def render_page():
                     }
                 ),
                 key="import_history_editor",
-                use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "id": None,  # Hide ID column
+                    "id": None,
                     "Date": st.column_config.DatetimeColumn(
                         "Date",
                         disabled=True,
@@ -181,24 +268,18 @@ def render_page():
                     "Date",
                     "Site",
                     "Tags",
-                ],  # Disable editing of date, site and calculated tags count
-                num_rows="dynamic",  # Allow adding/deleting rows (we only handle deletion)
+                ],
+                num_rows="dynamic",
             )
 
             # Handle changes
             if st.session_state.get("import_history_editor"):
                 changes = st.session_state["import_history_editor"]
 
-                # Handle updates
                 for index, updates in changes.get("edited_rows", {}).items():
-                    # Get the ID from the original dataframe
-                    # Note: index is the row index in the displayed dataframe
                     row_id = df.iloc[index]["id"]
-
-                    # Synthesize new data
                     current_row = df.iloc[index].to_dict()
 
-                    # Map column names back to internal names for updates
                     col_map_inv = {
                         "Questions": "total_questions",
                         "Tags": "total_tags",
@@ -234,12 +315,11 @@ def render_page():
                         st.success(f"Deleted row {index + 1}")
                         st.rerun()
 
-            # --- 📦 Tag Import Summary Section ---
+            # Tag Import Summary
             st.divider()
             st.subheader("📦 Tag Import Summary")
             st.caption("Total pages imported across all sessions, classified by tag.")
 
-            # Aggregate data based on Tag List and Pages
             tag_stats = {}
             for _, row in edited_df.iterrows():
                 tags = row.get("Tag List", [])
@@ -253,17 +333,14 @@ def render_page():
                         tag_stats[tag]["Import Sessions"] += 1
 
             if tag_stats:
-                # Convert to DataFrame for display
                 summary_df = pd.DataFrame.from_dict(tag_stats, orient="index")
                 summary_df.index.name = "Tag"
                 summary_df = summary_df.reset_index().sort_values(
                     by="Total Pages", ascending=False
                 )
 
-                # Display table
                 st.dataframe(
                     summary_df,
-                    use_container_width=True,
                     hide_index=True,
                     column_config={
                         "Tag": st.column_config.TextColumn("Tag", width="medium"),
@@ -276,7 +353,6 @@ def render_page():
                     },
                 )
 
-                # Visualization: Horizontal Bar Chart of Pages per Tag
                 fig_tag = px.bar(
                     summary_df,
                     x="Total Pages",
@@ -288,28 +364,118 @@ def render_page():
                     color_continuous_scale="Viridis",
                 )
                 fig_tag.update_layout(yaxis={"categoryorder": "total ascending"})
-                st.plotly_chart(fig_tag, use_container_width=True)
+                st.plotly_chart(fig_tag)
             else:
                 st.info("No tag information available to summarize.")
         else:
             st.info(
-                "No import history found. Start importing data to see statistics here."
+                "No import history found. Use the 'StackExchange Importer' tab to load data."
             )
 
     except Exception as e:
         st.error(f"Could not fetch import history: {e}")
 
-    # Quick actions
-    st.subheader("🚀 Quick Actions")
+
+# ---------------------------------------------------------------------------
+# Tab 2: StackExchange Importer Renderer
+# ---------------------------------------------------------------------------
+def _render_loader_tab():
+    st.caption("Choose StackExchange tags to load into Neo4j graph database.")
+    st.caption("Go to http://localhost:7474/ to explore the database directly.")
+
+    input_text = st.text_input("Enter tags separated by commas", value="python", key="loader_tags")
+    tags_to_import = [tag.strip() for tag in input_text.split(",") if tag.strip()]
+
+    site = st.text_input("Enter Stack Exchange site", value="stackoverflow", key="loader_site").strip()
+
     col1, col2 = st.columns(2)
-
     with col1:
-        if st.button("🔄 Refresh Dashboard", use_container_width=True):
-            st.rerun()
-
+        num_pages = st.number_input(
+            "Number of pages (100 questions per page)", step=1, min_value=1, value=1, key="loader_num_pages"
+        )
     with col2:
-        if st.button("📥 Go to Loader", use_container_width=True):
-            st.switch_page("pages/loader.py")
+        start_page = st.number_input("Start page", step=1, min_value=1, value=1, key="loader_start_page")
+    st.caption("Only questions with answers will be imported.")
+
+    if st.button("📥 Start Import", type="primary"):
+        with st.spinner("Loading... This might take a minute or two."):
+            info_placeholder = st.empty()
+            error_placeholder = st.container()
+
+            tasks_to_complete = len(tags_to_import) * int(num_pages)
+            completed_tasks = 0
+            total_imported_count = 0
+
+            for tag in tags_to_import:
+                for i in range(int(num_pages)):
+                    result = load_so_data(tag, int(start_page) + i, site)
+                    completed_tasks += 1
+                    progress = (completed_tasks / tasks_to_complete) * 100
+
+                    with info_placeholder:
+                        if result["status"] == "success":
+                            total_imported_count += result["count"]
+                            st.info(
+                                f"({progress:.2f}%) ✅ Success: Imported page {result['page']} for tag '{result['tag']}' ({result['count']} items)."
+                            )
+                        elif result["status"] == "empty":
+                            st.info(
+                                f"({progress:.2f}%) 🟡 Skipped: No items on page {result['page']} for tag '{result['tag']}'."
+                            )
+                    with error_placeholder:
+                        if result["status"] == "error":
+                            st.error(
+                                f"({progress:.2f}%) ❌ Failed: Page {result['page']} for tag '{result['tag']}'. Reason: {result['error']}"
+                            )
+
+                    del result
+                    gc.collect()
+                    time.sleep(0.5)
+
+            st.success(
+                f"Import complete! Successfully imported {total_imported_count} questions.",
+                icon="✅",
+            )
+
+            # Record the import session in Neo4j
+            try:
+                payload = {
+                    "total_questions": total_imported_count,
+                    "tags_list": tags_to_import,
+                    "total_pages": int(num_pages),
+                    "site": site,
+                }
+                rec_resp = requests.post(
+                    f"{BACKEND_URL}/ingest/record", json=payload
+                )
+                rec_resp.raise_for_status()
+
+                if rec_resp.json().get("status") == "success":
+                    st.info("📊 Import session recorded in dashboard history")
+                else:
+                    st.warning(
+                        f"Could not record import session: {rec_resp.json().get('message')}"
+                    )
+            except Exception as e:
+                st.warning(f"Could not record import session: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Main Page
+# ---------------------------------------------------------------------------
+def render_page():
+    st.header("📊 StackExchange Management")
+
+    with st.sidebar:
+        display_container_name()
+
+    tab_dashboard, tab_loader = st.tabs(["📊 Analytics & Dashboard", "📥 StackExchange Importer"])
+
+    with tab_dashboard:
+        _render_dashboard_tab()
+
+    with tab_loader:
+        _render_loader_tab()
 
 
 render_page()

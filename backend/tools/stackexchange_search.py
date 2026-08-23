@@ -185,18 +185,17 @@ Reranking = RunnableLambda(_rerank_docs).with_config({"run_name": "Reranking"})
 @tool
 def graph_rag_tool(question: str) -> str:
     """
-    Retrieve relevant information from the StackOverflow knowledge graph.
+    Search the StackExchange / StackOverflow developer knowledge graph containing programming questions, answers, tags, and accepted code solutions.
 
-    Use this tool whenever the user asks a technical question about software,
-    code, errors, or any topic that may be answered from the knowledge base.
-    Call it **at most once** per user message (or **twice** if the initial search did not provide good results).
+    Use this tool whenever:
+    - The user asks general programming language, library, syntax, API, framework, or software debugging questions.
+    - The question is about developer community discussions and code examples.
 
     Args:
-        question: The user's question or topic to look up in the graph.
+        question: The user's programming question or technical topic to look up in the graph.
 
     Returns:
-        A JSON-formatted string containing the raw records retrieved from
-        Neo4j.  The agent should use this data to compose its final answer.
+        A formatted string containing the raw records retrieved from Neo4j.
     """
     logger.info("graph_rag_tool invoked: %r", question[:120])
 

@@ -11,7 +11,7 @@ _tool_call_counts: dict[str, int] = {}
 _tool_call_start_times: dict[str, float] = {}
 _latest_session_id: str = ""
 
-MAX_TOOL_CALLS = 1
+MAX_TOOL_CALLS = 2
 MAX_RETRIEVAL_DURATION_SECONDS = 30.0
 
 def reset_tool_call_count(session_id: str) -> None:

@@ -338,8 +338,8 @@ def render_page():
                 st.warning(
                     "No graph data found. Try importing some data first using the Loader page."
                 )
-                if st.button("📥 Go to Loader", use_container_width=False):
-                    st.switch_page("pages/loader.py")
+                if st.button("📥 Go to Dashboard & Importer"):
+                    st.switch_page("pages/dashboard.py")
 
     except Exception as e:
         st.error(f"Could not load knowledge graph: {e}")
@@ -349,19 +349,15 @@ def render_page():
     st.divider()
     st.subheader("🚀 Quick Actions")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("🔄 Refresh All", use_container_width=True):
+        if st.button("🔄 Refresh All"):
             st.rerun()
 
     with col2:
-        if st.button("📊 Go to Dashboard", use_container_width=True):
+        if st.button("📊 Go to Dashboard & Importer"):
             st.switch_page("pages/dashboard.py")
-
-    with col3:
-        if st.button("📥 Go to Loader", use_container_width=True):
-            st.switch_page("pages/loader.py")
 
 
 render_page()

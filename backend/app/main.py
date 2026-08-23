@@ -10,7 +10,7 @@ from typing import Any, AsyncGenerator, Dict, List
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi import FastAPI, HTTPException, APIRouter, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.responses import StreamingResponse
@@ -25,6 +25,15 @@ from setup.init_config import (
     NEO4J_URL,
     NEO4J_USERNAME,
     create_constraints,
+)
+
+from utils.doc_processor import (
+    process_uploaded_file,
+    list_documents,
+    delete_document,
+    get_document_chunks,
+    update_document,
+    SUPPORTED_EXTENSIONS,
 )
 
 from utils.dashboard import (
@@ -439,6 +448,133 @@ async def delete_import_session(import_id: str):
 
 
 # ===========================================================================================================================================================
+# Unstructured Document Ingestion Endpoints
+# ===========================================================================================================================================================
+
+
+class DocumentUploadResponse(BaseModel):
+    status: str
+    doc_id: str = ""
+    filename: str = ""
+    chunk_count: int = 0
+    message: str = ""
+
+
+@ingest_router.post("/documents", response_model=DocumentUploadResponse)
+async def upload_document(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="default"),
+    description: str = Form(default=""),
+):
+    """
+    Upload a single document (PDF, DOCX, TXT, MD) for ingestion into Neo4j.
+
+    The file is chunked, embedded with the configured Ollama embedding model,
+    and stored as (Document)-[:HAS_CHUNK]->(DocumentChunk) nodes in Neo4j.
+    The resulting chunks are immediately queryable via document_search_tool.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided.")
+
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file type '{ext}'. Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+        )
+
+    try:
+        file_bytes = await file.read()
+
+        result = await asyncio.to_thread(
+            process_uploaded_file,
+            file_bytes,
+            file.filename,
+            user_id,
+            description,
+            get_graph_instance(),
+            embedding_model(),
+        )
+
+        return DocumentUploadResponse(
+            status="success",
+            doc_id=result["doc_id"],
+            filename=result["filename"],
+            chunk_count=result["chunk_count"],
+            message=f"Document '{file.filename}' ingested successfully with {result['chunk_count']} chunks.",
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting document '{file.filename}': {e}")
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@ingest_router.get("/documents")
+async def get_documents():
+    """
+    List all uploaded documents stored in Neo4j.
+    Returns metadata only (no embeddings or chunk content).
+    """
+    try:
+        docs = await asyncio.to_thread(list_documents, get_graph_instance())
+        return {"status": "success", "documents": docs, "count": len(docs)}
+    except Exception as e:
+        logger.error(f"Error listing documents: {e}")
+        return {"status": "error", "message": str(e), "documents": []}
+
+
+@ingest_router.get("/documents/{doc_id}/chunks")
+async def get_doc_chunks(doc_id: str):
+    """
+    List all chunks for a specific document.
+    """
+    try:
+        chunks = await asyncio.to_thread(get_document_chunks, doc_id, get_graph_instance())
+        return {"status": "success", "chunks": chunks, "count": len(chunks)}
+    except Exception as e:
+        logger.error(f"Error getting chunks for document {doc_id}: {e}")
+        return {"status": "error", "message": str(e), "chunks": []}
+
+
+class DocumentUpdateRequest(BaseModel):
+    description: str = ""
+
+
+@ingest_router.put("/documents/{doc_id}")
+async def update_doc_metadata(doc_id: str, req: DocumentUpdateRequest):
+    """
+    Update a document's description/folder metadata.
+    """
+    try:
+        updated = await asyncio.to_thread(update_document, doc_id, req.description, get_graph_instance())
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found.")
+        return {"status": "success", "message": f"Document '{doc_id}' metadata updated."}
+    except Exception as e:
+        logger.error(f"Error updating document {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+
+@ingest_router.delete("/documents/{doc_id}")
+async def remove_document(doc_id: str):
+    """
+    Delete a document and all its associated chunks from Neo4j.
+    """
+    try:
+        deleted = await asyncio.to_thread(delete_document, doc_id, get_graph_instance())
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found.")
+        return {"status": "success", "message": f"Document '{doc_id}' and all chunks deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document {doc_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
+
+
+# ===========================================================================================================================================================
 # Streaming Logic
 # ===========================================================================================================================================================
 @chat_router.post("/agent/ask")
@@ -483,18 +619,12 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                             messages.append(AIMessage(content=content))
 
             # Construct input for Graph Agent (expects 'messages' key in state)
-            # Add current user message to the history list
-            target_tool = "graph_rag_tool" if request.mode == "auto" else "custom_rag_tool"
-            system_instruction = SystemMessage(
-                content=f"IMPORTANT: The user has selected the '{request.mode}' mode for retrieval. If you need to search the knowledge base for this query, you MUST use the `{target_tool}` tool. DO NOT use the other retrieval tool."
-            )
-            input_messages = messages + [system_instruction, HumanMessage(content=request.question)]
+            input_messages = messages + [HumanMessage(content=request.question)]
             input_data = {
                 "messages": input_messages,
                 "question": request.question,
                 "session_id": request.session_id,
                 "session_topic": "",  # Middleware will populate or use default
-                "mode": request.mode,
             }
 
             # Save user message to DB
@@ -518,16 +648,25 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
             # checking installed version or trying v2 is safer for new setups
 
             async for event in stackexchange_agent.astream_events(
-                input_data, version="v2", config={"configurable": {"mode": request.mode}}
+                input_data, version="v2"
             ):
                 event_type = event["event"]
                 event_name = event["name"]
 
                 # --- A. Status Updates (Tools) ---
                 if event_type == "on_tool_start":
-                    if event_name in ["graph_rag_tool", "custom_rag_tool"]:
+                    if event_name in ["graph_rag_tool", "document_search_tool"]:
                         # Record the run_id so we can filter events fired inside the tool
                         tool_run_id = event.get("run_id")
+
+                    # Friendly user message
+                    if event_name == "document_search_tool":
+                        status_msg = "📄 Searching uploaded documents..."
+                    elif event_name == "graph_rag_tool":
+                        status_msg = "🕷️ Searching StackExchange knowledge graph..."
+                    else:
+                        status_msg = f"🛠️ Using tool: {event_name}..."
+
                     # Notify frontend that a tool is running
                     yield f"data: {
                         json.dumps(
@@ -535,21 +674,29 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                                 'type': 'status',
                                 'stage': 'tool_start',
                                 'status': 'running',
-                                'message': f'🛠️ Using tool: {event_name}...',
+                                'message': status_msg,
                             }
                         )
                     }\n\n"
 
                 elif event_type == "on_tool_end":
-                    if event_name in ["graph_rag_tool", "custom_rag_tool"]:
+                    if event_name in ["graph_rag_tool", "document_search_tool"]:
                         tool_run_id = None  # Reset: tool finished, resume normal streaming
+
+                    if event_name == "document_search_tool":
+                        status_msg = "✅ Document search completed"
+                    elif event_name == "graph_rag_tool":
+                        status_msg = "✅ Graph retrieval completed"
+                    else:
+                        status_msg = f"✅ Tool {event_name} completed"
+
                     yield f"data: {
                         json.dumps(
                             {
                                 'type': 'status',
                                 'stage': 'tool_end',
                                 'status': 'complete',
-                                'message': f'✅ Tool {event_name} completed',
+                                'message': status_msg,
                             }
                         )
                     }\n\n"
