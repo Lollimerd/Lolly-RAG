@@ -25,7 +25,6 @@ from setup.init_config import (
     NEO4J_URL,
     NEO4J_USERNAME,
     create_constraints,
-    create_vector_indexes,
 )
 
 from utils.dashboard import (
