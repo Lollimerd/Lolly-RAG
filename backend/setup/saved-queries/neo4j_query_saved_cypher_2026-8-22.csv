@@ -1,0 +1,41 @@
+name,description,query,id,parentId,isFolder
+leiden community detection,,,0,,true
+deprecrated gds graph proj,,"// Step 1: Project the graph with weight filtering
+CALL gds.graph.project(
+    'community-graph',
+    ['Answer', 'Question', 'Tag', 'User'],
+    {
+        REL: {
+            type: '*',
+            orientation: 'UNDIRECTED',
+            properties: {
+                weight: {
+                    property: 'weight',
+                    defaultValue: 1.0  // Assign default weight if missing
+                }
+            },
+            // Optional: aggregate multiple relationships between same nodes
+            aggregation: 'SUM'
+        }}
+);",1,0,false
+reset community,,"MATCH (n)
+REMOVE n.communityId",2,0,false
+step 1,,"CALL gds.graph.project(
+  'stackexchange-graph',
+  ['Question', 'Answer', 'Tag', 'User'],
+  {
+    ASKED: {orientation: 'UNDIRECTED'},
+    ANSWERS: {orientation: 'UNDIRECTED'},
+    TAGGED: {orientation: 'UNDIRECTED'},
+    PROVIDED: {orientation: 'UNDIRECTED'}
+  }
+)
+YIELD graphName, nodeCount, relationshipCount;",3,0,false
+step 2,,"CALL gds.leiden.write('stackexchange-graph', {
+  writeProperty: 'CommunityId',
+  includeIntermediateCommunities: true
+})
+YIELD communityCount, modularity;",4,0,false
+removes answer nodes with n score & below,,"MATCH (a:Answer)
+WHERE a.score <= 0
+DETACH DELETE a",5,,false
