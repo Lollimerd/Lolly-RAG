@@ -144,13 +144,14 @@ def create_vector_indexes(driver, dimensions: int = 768) -> None:
             logger.warning(f"Could not create vector index {index_name}: {e}")
 
 def create_fulltext_indexes(driver) -> None:
-    """Creates fulltext schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
+    """Creates fulltext schema indexes for Question, Answer, Tag, User, Document, and DocumentChunk nodes if they do not exist."""
     indexes = [
         ("Question_keyword_index", "Question", ["title", "body"]),
         ("Answer_keyword_index", "Answer", ["body"]),
         ("Tag_keyword_index", "Tag", ["name"]),
         ("User_keyword_index", "User", ["display_name"]),
         ("DocumentChunk_keyword_index", "DocumentChunk", ["content", "source"]),
+        ("Document_keyword_index", "Document", ["filename", "description"]),
     ]
     for index_name, label, props in indexes:
         props_str = ", ".join(f"n.{prop}" for prop in props)
@@ -169,13 +170,16 @@ create_fulltext_index = create_fulltext_indexes
 
 
 def create_text_indexes(driver) -> None:
-    """Creates text schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
+    """Creates text schema indexes for Question, Answer, Tag, User, Document, and DocumentChunk nodes if they do not exist."""
     indexes = [
         ("Question_title_text_index", "Question", "title"),
         ("Tag_name_text_index", "Tag", "name"),
         ("User_display_name_text_index", "User", "display_name"),
         ("DocumentChunk_source_text_index", "DocumentChunk", "source"),
         ("Document_source_text_index", "Document", "source"),
+        ("Document_filename_text_index", "Document", "filename"),
+        ("Document_file_type_text_index", "Document", "file_type"),
+        ("Document_description_text_index", "Document", "description"),
     ]
     for index_name, label, prop in indexes:
         cypher = f"""
