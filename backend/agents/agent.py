@@ -3,7 +3,7 @@ from deepagents import create_deep_agent
 from setup.init_config import answer_LLM
 from tools.stackexchange_search import graph_rag_tool
 from tools.document_search import document_search_tool
-from middleware.in_built import clear_tool_uses
+from middleware.in_built import clear_tool_uses, summarize
 from middleware.mermaid import MermaidValidationMiddleware
 
 import logging
@@ -86,6 +86,7 @@ try:
         middleware=[
             MermaidValidationMiddleware(),
             clear_tool_uses,
+            summarize
         ],
     )
 
