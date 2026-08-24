@@ -20,7 +20,29 @@ CALL gds.graph.project(
 );",1,0,false
 reset community,,"MATCH (n)
 REMOVE n.communityId",2,0,false
-step 1,,"CALL gds.graph.project(
+UNIVERSAL GDS,,"CALL gds.graph.project(
+  'local-graph',
+  {
+    Question: {},
+    Answer: {},
+    Tag: {},
+    User: {},
+    Document: {},
+    DocumentChunk: {
+      properties: ['embedding']
+    }
+  },
+  {
+    ASKED: {orientation: 'UNDIRECTED'},
+    ANSWERS: {orientation: 'UNDIRECTED'},
+    TAGGED: {orientation: 'UNDIRECTED'},
+    PROVIDED: {orientation: 'UNDIRECTED'},
+    HAS_CHUNK: {orientation: 'UNDIRECTED'}
+  }
+)
+YIELD graphName, nodeCount, relationshipCount;
+",3,0,false
+stackexchange gds,,"CALL gds.graph.project(
   'stackexchange-graph',
   ['Question', 'Answer', 'Tag', 'User'],
   {
@@ -30,15 +52,17 @@ step 1,,"CALL gds.graph.project(
     PROVIDED: {orientation: 'UNDIRECTED'}
   }
 )
-YIELD graphName, nodeCount, relationshipCount;",3,0,false
-step 2,,"CALL gds.leiden.write('stackexchange-graph', {
+YIELD graphName, nodeCount, relationshipCount;",4,0,false
+write leiden,,"CALL gds.leiden.write('local-graph', {
   writeProperty: 'CommunityId',
   includeIntermediateCommunities: true
 })
-YIELD communityCount, modularity;",4,0,false
+YIELD communityCount, modularity;",5,0,false
 removes answer nodes with n score & below,,"MATCH (a:Answer)
 WHERE a.score <= 0
-DETACH DELETE a",5,,false
-list all indexes,,SHOW INDEXES,6,,false
-list vector indexes,,SHOW VECTOR INDEXES,7,,false
-list fulltext indexes,,SHOW FULLTEXT INDEXES,8,,false
+DETACH DELETE a",6,,false
+schema,,CALL db.schema.visualization,7,,false
+Check Indexes,,,8,,true
+list fulltext indexes,,SHOW FULLTEXT INDEXES,9,8,false
+list vector indexes,,SHOW VECTOR INDEXES,10,8,false
+list all indexes,,SHOW INDEXES,11,8,false
