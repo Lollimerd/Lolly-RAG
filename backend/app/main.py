@@ -465,6 +465,7 @@ async def upload_document(
     file: UploadFile = File(...),
     user_id: str = Form(default="default"),
     description: str = Form(default=""),
+    force: bool = Form(default=False),
 ):
     """
     Upload a single document (PDF, DOCX, TXT, MD) for ingestion into Neo4j.
@@ -472,6 +473,7 @@ async def upload_document(
     The file is chunked, embedded with the configured Ollama embedding model,
     and stored as (Document)-[:HAS_CHUNK]->(DocumentChunk) nodes in Neo4j.
     The resulting chunks are immediately queryable via document_search_tool.
+    Duplicate files are skipped automatically unless force=True.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
@@ -494,14 +496,16 @@ async def upload_document(
             description,
             get_graph_instance(),
             embedding_model(),
+            force=force,
         )
 
         return DocumentUploadResponse(
-            status="success",
+            status=result.get("status", "success"),
             doc_id=result["doc_id"],
             filename=result["filename"],
             chunk_count=result["chunk_count"],
-            message=f"Document '{file.filename}' ingested successfully with {result['chunk_count']} chunks.",
+            message=result.get("message")
+            or f"Document '{file.filename}' ingested successfully with {result['chunk_count']} chunks.",
         )
 
     except ValueError as e:
@@ -575,6 +579,80 @@ async def remove_document(doc_id: str):
 
 
 # ===========================================================================================================================================================
+# Streaming Helpers
+# ===========================================================================================================================================================
+
+def _sse(data: dict) -> str:
+    """Wrap a dict as a Server-Sent Event frame."""
+    return f"data: {json.dumps(data)}\n\n"
+
+
+def _parse_chunk(chunk) -> tuple[str, str]:
+    """Extract (content, reasoning) text from a LangChain streaming chunk."""
+    content = ""
+    reasoning = ""
+
+    raw = getattr(chunk, "content", "")
+    if isinstance(raw, str):
+        content = raw
+    elif isinstance(raw, list):
+        for part in raw:
+            if isinstance(part, str):
+                content += part
+            elif isinstance(part, dict):
+                p_type = part.get("type", "")
+                if p_type == "text":
+                    content += part.get("text", "")
+                elif p_type in ("reasoning", "thinking"):
+                    reasoning += part.get("reasoning") or part.get("thinking") or part.get("text", "")
+    else:
+        content = str(raw) if raw else ""
+
+    # Additional reasoning from kwargs (e.g. Claude extended thinking)
+    if hasattr(chunk, "additional_kwargs") and isinstance(chunk.additional_kwargs, dict):
+        extra = chunk.additional_kwargs.get("reasoning_content") or chunk.additional_kwargs.get("thinking") or ""
+        reasoning += extra
+
+    # Strip inline <think>...</think> tags streamed inside content
+    if "<think>" in content:
+        prefix, rest = content.split("<think>", 1)
+        content = prefix
+        if "</think>" in rest:
+            r_part, c_part = rest.split("</think>", 1)
+            reasoning += r_part
+            content += c_part
+        else:
+            reasoning += rest
+    elif "</think>" in content:
+        r_part, c_part = content.split("</think>", 1)
+        reasoning += r_part
+        content = c_part
+
+    return content, reasoning
+
+
+# Tool status message lookups
+_TOOL_START_MSG: dict[str, str] = {
+    "document_search_tool": "📄 Searching uploaded documents...",
+    "graph_rag_tool": "🕷️ Searching StackExchange knowledge graph...",
+}
+_TOOL_END_MSG: dict[str, str] = {
+    "document_search_tool": "✅ Document search completed",
+    "graph_rag_tool": "✅ Graph retrieval completed",
+}
+# chain_name -> (stage, start_message)
+_CHAIN_START: dict[str, tuple[str, str]] = {
+    "GraphTraversal": ("graph_traversal", "🕷️ Traversing Knowledge Graph..."),
+    "Reranking":      ("reranking",       "⚖️ Reranking Documents..."),
+}
+# chain_name -> (stage, count_label)
+_CHAIN_END: dict[str, tuple[str, str]] = {
+    "GraphTraversal": ("graph_traversal", "Found"),
+    "Reranking":      ("reranking",       "Top"),
+}
+
+
+# ===========================================================================================================================================================
 # Streaming Logic
 # ===========================================================================================================================================================
 @chat_router.post("/agent/ask")
@@ -591,8 +669,7 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
         response_chunks = []
         response_thought_chunks = []
 
-        # Track the run_id of graph_rag_tool so we can suppress LLM stream
-        # events that fire *inside* the tool (Cypher gen + QA steps).
+        # Track the run_id of graph_rag_tool so we can suppress LLM stream, events that fire *inside* the tool (Cypher gen + QA steps).
         # Only the final agent LLM response should be streamed to the frontend.
         tool_run_id: str | None = None
 
@@ -644,204 +721,59 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                 logger.warning(f"Error saving user message: {e}")
 
             # 2. Stream Events from Agent Executor
-            # version="v1" for langchain < 0.2, "v2" for >= 0.2
-            # checking installed version or trying v2 is safer for new setups
-
             async for event in stackexchange_agent.astream_events(
                 input_data, version="v2"
             ):
                 event_type = event["event"]
                 event_name = event["name"]
 
-                # --- A. Status Updates (Tools) ---
+                # --- A. Tool status ---
                 if event_type == "on_tool_start":
-                    if event_name in ["graph_rag_tool", "document_search_tool"]:
-                        # Record the run_id so we can filter events fired inside the tool
+                    if event_name in ("graph_rag_tool", "document_search_tool"):
                         tool_run_id = event.get("run_id")
-
-                    # Friendly user message
-                    if event_name == "document_search_tool":
-                        status_msg = "📄 Searching uploaded documents..."
-                    elif event_name == "graph_rag_tool":
-                        status_msg = "🕷️ Searching StackExchange knowledge graph..."
-                    else:
-                        status_msg = f"🛠️ Using tool: {event_name}..."
-
-                    # Notify frontend that a tool is running
-                    yield f"data: {
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'stage': 'tool_start',
-                                'status': 'running',
-                                'message': status_msg,
-                            }
-                        )
-                    }\n\n"
+                    msg = _TOOL_START_MSG.get(event_name, f"🛠️ Using tool: {event_name}...")
+                    yield _sse({"type": "status", "stage": "tool_start", "status": "running", "message": msg})
 
                 elif event_type == "on_tool_end":
-                    if event_name in ["graph_rag_tool", "document_search_tool"]:
-                        tool_run_id = None  # Reset: tool finished, resume normal streaming
+                    if event_name in ("graph_rag_tool", "document_search_tool"):
+                        tool_run_id = None
+                    msg = _TOOL_END_MSG.get(event_name, f"✅ Tool {event_name} completed")
+                    yield _sse({"type": "status", "stage": "tool_end", "status": "complete", "message": msg})
 
-                    if event_name == "document_search_tool":
-                        status_msg = "✅ Document search completed"
-                    elif event_name == "graph_rag_tool":
-                        status_msg = "✅ Graph retrieval completed"
-                    else:
-                        status_msg = f"✅ Tool {event_name} completed"
+                # --- B. Internal chain steps (GraphTraversal & Reranking) ---
+                elif event_type == "on_chain_start" and event_name in _CHAIN_START:
+                    stage, message = _CHAIN_START[event_name]
+                    yield _sse({"type": "status", "stage": stage, "status": "running", "message": message})
 
-                    yield f"data: {
-                        json.dumps(
-                            {
-                                'type': 'status',
-                                'stage': 'tool_end',
-                                'status': 'complete',
-                                'message': status_msg,
-                            }
-                        )
-                    }\n\n"
+                elif event_type == "on_chain_end" and event_name in _CHAIN_END:
+                    stage, label = _CHAIN_END[event_name]
+                    output = event["data"].get("output", [])
+                    count = len(output) if isinstance(output, list) else 0
+                    msg = f"✅ {label} {count} documents" if label == "Found" else f"✅ {label} {count} documents selected"
+                    yield _sse({"type": "status", "stage": stage, "status": "complete", "message": msg, "count": count})
 
-                # --- B. Internal Tool Steps (GraphTraversal & Reranking) ---
-                # These events happen *inside* the tool execution
-                elif event_type == "on_chain_start":
-                    if event_name == "GraphTraversal":
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'type': 'status',
-                                    'stage': 'graph_traversal',
-                                    'status': 'running',
-                                    'message': '🕷️ Traversing Knowledge Graph...',
-                                }
-                            )
-                        }\n\n"
-                    elif event_name == "Reranking":
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'type': 'status',
-                                    'stage': 'reranking',
-                                    'status': 'running',
-                                    'message': '⚖️ Reranking Documents...',
-                                }
-                            )
-                        }\n\n"
-
-                elif event_type == "on_chain_end":
-                    if event_name == "GraphTraversal":
-                        # Attempt to extract count if possible, though 'output' structure varies
-                        output = event["data"].get("output", [])
-                        count = len(output) if isinstance(output, list) else 0
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'type': 'status',
-                                    'stage': 'graph_traversal',
-                                    'status': 'complete',
-                                    'message': f'✅ Found {count} documents',
-                                    'count': count,
-                                }
-                            )
-                        }\n\n"
-                    elif event_name == "Reranking":
-                        output = event["data"].get("output", [])
-                        count = len(output) if isinstance(output, list) else 0
-                        yield f"data: {
-                            json.dumps(
-                                {
-                                    'type': 'status',
-                                    'stage': 'reranking',
-                                    'status': 'complete',
-                                    'message': f'✅ Top {count} documents selected',
-                                    'count': count,
-                                }
-                            )
-                        }\n\n"
-
-                # --- C. Token Streaming (LLM) ---
+                # --- C. Token streaming (final agent LLM only) ---
                 elif event_type == "on_chat_model_stream":
-                    event_tags = event.get("tags", [])
-                    if "answer_llm" not in event_tags:
+                    if "answer_llm" not in event.get("tags", []):
                         continue
-
                     chunk = event["data"].get("chunk")
                     if chunk:
-                        content = ""
-                        reasoning_chunk = ""
-
-                        # 1. Safely extract content and reasoning from chunk
-                        raw_content = getattr(chunk, "content", "")
-                        if isinstance(raw_content, str):
-                            content = raw_content
-                        elif isinstance(raw_content, list):
-                            for part in raw_content:
-                                if isinstance(part, str):
-                                    content += part
-                                elif isinstance(part, dict):
-                                    p_type = part.get("type", "")
-                                    if p_type == "text":
-                                        content += part.get("text", "")
-                                    elif p_type in ("reasoning", "thinking"):
-                                        reasoning_chunk += (
-                                            part.get("reasoning")
-                                            or part.get("thinking")
-                                            or part.get("text", "")
-                                        )
-                        else:
-                            content = str(raw_content) if raw_content else ""
-
-                        # Extract reasoning content if present in additional_kwargs
-                        if hasattr(chunk, "additional_kwargs") and isinstance(
-                            chunk.additional_kwargs, dict
-                        ):
-                            add_reasoning = (
-                                chunk.additional_kwargs.get("reasoning_content")
-                                or chunk.additional_kwargs.get("thinking")
-                                or ""
-                            )
-                            if add_reasoning:
-                                reasoning_chunk += add_reasoning
-
-                        # 2. Parse inline <think>...</think> tags if model streams them inside content
-                        if "<think>" in content:
-                            parts = content.split("<think>", 1)
-                            prefix = parts[0]
-                            rest = parts[1]
-                            content = prefix
-                            if "</think>" in rest:
-                                r_part, c_part = rest.split("</think>", 1)
-                                reasoning_chunk += r_part
-                                content += c_part
-                            else:
-                                reasoning_chunk += rest
-                        elif "</think>" in content:
-                            parts = content.split("</think>", 1)
-                            reasoning_chunk += parts[0]
-                            content = parts[1]
-
-                        # 3. SSE Event Emission & Buffer Accumulation
-                        if content or reasoning_chunk:
-                            event_data = {
-                                "type": "token",
-                                "content": content,
-                                "reasoning_content": reasoning_chunk,
-                            }
-                            yield f"data: {json.dumps(event_data)}\n\n"
-
+                        content, reasoning = _parse_chunk(chunk)
+                        if content or reasoning:
+                            yield _sse({"type": "token", "content": content, "reasoning_content": reasoning})
                             if content:
                                 response_chunks.append(content)
-                            if reasoning_chunk:
-                                response_thought_chunks.append(reasoning_chunk)
+                            if reasoning:
+                                response_thought_chunks.append(reasoning)
 
         except Exception as e:
             logger.error(f"Error in agent stream: {e}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            yield _sse({"type": "error", "content": str(e)})
 
-        # 4. Save AI Response to DB
+        # Save AI response to DB
         try:
             full_response = "".join(response_chunks)
             full_thought = "".join(response_thought_chunks)
-
             if full_response:
                 await asyncio.to_thread(
                     add_ai_message_to_session,
@@ -852,6 +784,9 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                 logger.info(f"Response saved to DB: {len(full_response)} chars")
         except Exception as e:
             logger.warning(f"Error saving AI response: {e}")
+
+        # Signal clean stream end — prevents client "unexpected EOF"
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         agent_stream_generator(),
