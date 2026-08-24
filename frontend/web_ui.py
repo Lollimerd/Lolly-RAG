@@ -259,18 +259,6 @@ with st.sidebar:
 
     st.write("OPSEC ©LOLLIMERD 2025")
 
-    # # --- Debug Mode ---
-    # with st.expander("🛠️ Debug Info"):
-    #     st.write("Active Chat ID:", st.session_state.active_chat_id)
-    #     if (
-    #         st.session_state.active_chat_id
-    #         and st.session_state.active_chat_id in st.session_state.chats
-    #     ):
-    #         chat = st.session_state.chats[st.session_state.active_chat_id]
-    #         st.write("Message Count:", len(chat.get("messages", [])))
-    #         st.write("Last 3 Messages (Raw):")
-    #         st.json(chat.get("messages", [])[-3:])
-
 active_chat = get_active_chat()
 
 # --- Main Content Area ---
@@ -334,18 +322,14 @@ else:
 
     # --- Main Interaction Logic (operates on the active chat) ---
     if prompt := st.chat_input("Ask your question..."):
-        # Get the active chat
         active_chat = get_active_chat()
 
         if active_chat:
-            # Append to the active chat's message list
             active_chat["messages"].append({"role": "user", "content": prompt})
 
             # Set a title for new chats based on the first message
-            if active_chat["title"] == "New Chat" or active_chat["title"].startswith(
-                "Chat "
-            ):
-                active_chat["title"] = prompt[:15] + "..."  # Truncate for display
+            if active_chat["title"] == "New Chat" or active_chat["title"].startswith("Chat "):
+                active_chat["title"] = prompt[:15] + "..."
 
             with st.chat_message(name=st.session_state.get("user_name", "User")):
                 st.markdown(prompt)
@@ -356,11 +340,9 @@ else:
                 thought_container_loc = st.empty()
                 answer_container_loc = st.empty()
 
-                # 2. Setup Thoughts Container (so we have a target to write to)
+                # 2. Setup Thoughts Container
                 with thought_container_loc.container():
-                    thought_container = st.expander(
-                        "Show Agent Thoughts", expanded=True
-                    )
+                    thought_container = st.expander("Show Agent Thoughts", expanded=True)
                     with thought_container:
                         thought_placeholder = st.empty()
 
@@ -371,13 +353,10 @@ else:
                 thought_content = ""
                 answer_content = ""
 
-                # 4. Run Logic inside Status Container (Visual position #1)
+                # 4. Stream from Agent inside Status Box
                 with status_container_loc.container():
-                    with st.status(
-                        "🚀 Initializing Agent...", expanded=True
-                    ) as status_box:
+                    with st.status("🚀 Initializing Agent...", expanded=True) as status_box:
                         try:
-                            # prepare payload
                             session_id = st.session_state.active_chat_id
                             user_id = st.session_state.get("user_name", "test_user")
                             payload = {
@@ -385,139 +364,97 @@ else:
                                 "session_id": session_id,
                                 "user_id": user_id,
                             }
-                            timeout = httpx.Timeout(60, read=60)
+                            timeout = httpx.Timeout(60, read=120)
                             with httpx.Client(timeout=timeout) as client:
-                                with connect_sse(
-                                    client,
-                                    "POST",
-                                    AGENT_URL,
-                                    json=payload,
-                                ) as event_source:
+                                with connect_sse(client, "POST", AGENT_URL, json=payload) as event_source:
                                     for sse in event_source.iter_sse():
-                                        if sse.data:
-                                            try:
-                                                data = json.loads(sse.data)
-                                                msg_type = data.get("type")
+                                        if not sse.data or sse.data.strip() == "[DONE]":
+                                            break
 
-                                                # --- Handle Status Events ---
-                                                if msg_type == "status":
-                                                    stage = data.get("stage")
-                                                    message = data.get("message", "")
-                                                    status_state = data.get("status")
+                                        try:
+                                            data = json.loads(sse.data)
+                                        except json.JSONDecodeError:
+                                            continue
 
-                                                    # Update the container label to show current activity
-                                                    status_box.update(
-                                                        label=message, state="running", expanded=True
-                                                    )
+                                        msg_type = data.get("type")
+                                        if msg_type == "done":
+                                            break
 
-                                                    if status_state == "running":
-                                                        st.info(message, icon="🔄")
-                                                    elif status_state == "complete":
-                                                        st.success(message, icon="✅")
+                                        if msg_type == "status":
+                                            message = data.get("message", "")
+                                            status_state = data.get("status")
+                                            status_box.update(label=message, state="running", expanded=True)
+                                            if status_state == "running":
+                                                st.info(message, icon="🔄")
+                                            elif status_state == "complete":
+                                                st.success(message, icon="✅")
 
-                                                # --- Handle Token Events ---
-                                                elif msg_type == "token":
-                                                    # Collapse status box once generation starts
-                                                    status_box.update(
-                                                        label="✅ Analysis Complete. Generating Response...",
-                                                        state="complete",
-                                                        expanded=False,
-                                                    )
+                                        elif msg_type == "token":
+                                            status_box.update(
+                                                label="✅ Analysis Complete. Generating Response...",
+                                                state="complete",
+                                                expanded=False,
+                                            )
+                                            chunk_content = data.get("content", "")
+                                            chunk_thought = data.get("reasoning_content", "")
 
-                                                    chunk_content = data.get(
-                                                        "content", ""
-                                                    )
-                                                    chunk_thought = data.get(
-                                                        "reasoning_content", ""
-                                                    )
+                                            if chunk_content:
+                                                answer_content += chunk_content
+                                                answer_placeholder.markdown(answer_content + "▌")
 
-                                                    answer_content += chunk_content
-                                                    thought_content += chunk_thought
+                                            if chunk_thought:
+                                                thought_content += chunk_thought
+                                                thought_placeholder.markdown(thought_content + "▌")
 
-                                                    # Render Answer
-                                                    if answer_content:
-                                                        answer_placeholder.markdown(
-                                                            answer_content + "▌"
-                                                        )
-
-                                                    # Render Thoughts
-                                                    if thought_content:
-                                                        thought_placeholder.markdown(
-                                                            thought_content + "▌"
-                                                        )
-
-                                                # --- Handle Errors ---
-                                                elif msg_type == "error":
-                                                    status_box.update(
-                                                        label="❌ Error Occurred",
-                                                        state="error",
-                                                        expanded=True,
-                                                    )
-                                                    st.error(
-                                                        data.get(
-                                                            "content", "Unknown error"
-                                                        )
-                                                    )
-
-                                            except json.JSONDecodeError as e:
-                                                logger.error(
-                                                    f"Error decoding JSON: {sse.data}, \n{e}"
-                                                )
-                                                continue
-
-                            # --- Final Processing and Rendering ---
-                            # Remove type cursors and render final markdown/mermaid
-                            answer_placeholder.empty()
-                            thought_placeholder.empty()
-
-                            with thought_container:
-                                if thought_content:
-                                    render_message_with_mermaid(
-                                        thought_content, key_suffix="stream-thought"
-                                    )
-                                else:
-                                    st.info("No agent thoughts captured")
-
-                            if answer_content:
-                                render_message_with_mermaid(
-                                    answer_content, key_suffix="stream-content"
-                                )
-                            else:
-                                st.warning("No response content received")
-
-                            # Append the final response to the active chat's message list
-                            active_chat["messages"].append(
-                                {
-                                    "role": "assistant",
-                                    "thought": thought_content,
-                                    "content": answer_content,
-                                }
-                            )
-                            st.rerun()  # Rerun to update the chat list in the sidebar if the title changed
+                                        elif msg_type == "error":
+                                            err_msg = data.get("content", "Unknown error")
+                                            status_box.update(label="❌ Error Occurred", state="error", expanded=True)
+                                            st.error(err_msg)
 
                         except httpx.TimeoutException as e:
                             logger.error(f"Request timeout: {e}")
-                            st.error(
-                                "The request timed out. The server is taking too long to respond. Please try again later."
-                            )
-                        except requests.exceptions.ConnectionError as e:
+                            status_box.update(label="⏱️ Request Timeout", state="error", expanded=True)
+                            st.error("The request timed out. Please try again later.")
+                        except (requests.exceptions.RequestException, httpx.RequestError) as e:
                             logger.error(f"Connection error: {e}")
-                            st.error(
-                                f"Could not connect to the API at {BACKEND_URL}. Is the backend running?"
-                            )
-                        except requests.exceptions.RequestException as e:
-                            logger.error(f"Request exception: {e}")
-                            st.error(f"API Error: {str(e)[:200]}")
+                            status_box.update(label="🔌 Connection Error", state="error", expanded=True)
+                            st.error(f"Could not connect to the API at {BACKEND_URL}. Is the backend running?")
                         except Exception as e:
                             logger.error(f"Unexpected error: {e}")
+                            status_box.update(label="❌ Error Occurred", state="error", expanded=True)
                             st.error(f"Unexpected error: {str(e)[:200]}")
 
+                # 5. Final Processing and Rendering
+                answer_placeholder.empty()
+                thought_placeholder.empty()
+
+                with thought_container:
+                    if thought_content:
+                        render_message_with_mermaid(thought_content, key_suffix="stream-thought")
+                    else:
+                        st.info("No agent thoughts captured")
+
+                if answer_content:
+                    render_message_with_mermaid(answer_content, key_suffix="stream-content")
+                else:
+                    st.warning("No response content received")
+
+                active_chat["messages"].append(
+                    {
+                        "role": "assistant",
+                        "thought": thought_content,
+                        "content": answer_content,
+                    }
+                )
+                st.rerun()
+
     # --- Auto-Scroll to Bottom ---
-    st.iframe(
+    components.html(
         """
         <script>
             var scrollingElement = (document.scrollingElement || document.body);
             scrollingElement.scrollTop = scrollingElement.scrollHeight;
         </script>
-        """
+        """,
+        height=0,
     )
