@@ -1,6 +1,7 @@
 """Setting up ollama models, vectorstores and Neo4j Configs"""
 
 import os
+import logging
 from functools import lru_cache
 from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings, ChatOllama
@@ -8,6 +9,8 @@ from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import SearchType
 from typing import Dict, List
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+logger = logging.getLogger(__name__)
 
 # ===========================================================================================================================================================
 # Step 1: Load Configuration: Docker, Neo4j, Ollama, Langchain
@@ -20,7 +23,6 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 
 
-# qwen3:8b works for now with limited context of 40k, qwen3:30b works with 256k max
 def answer_LLM():
     """main model for RAG agent"""
     return ChatOllama(
@@ -37,9 +39,6 @@ def answer_LLM():
         tags=["answer_llm"],
     )
 
-
-# embedding model — singleton to avoid reloading on every call
-# snowflake artic embed2
 @lru_cache(maxsize=1)
 def embedding_model():
     """embedding model"""
@@ -49,8 +48,6 @@ def embedding_model():
         num_ctx=8192,  # 8k context
     )
 
-
-# reranker model — singleton: ONNX + TensorRT compilation happens once
 @lru_cache(maxsize=1)
 def reranker_model():
     """reranker model"""
@@ -62,8 +59,6 @@ def reranker_model():
         },
     )
 
-
-# save llama3.1:8b for now
 def summarizer():
     """summarizes historical context"""
     return ChatOllama(
@@ -72,7 +67,6 @@ def summarizer():
         num_ctx=8192,  # 40k context
         tags=["summarizer_llm"],
     )
-
 
 _graph_instance = None
 
@@ -91,10 +85,6 @@ def get_graph_instance() -> Neo4jGraph:
     return _graph_instance
 
 # print(get_graph_instance().schema)
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 def create_vector_indexes(driver, dimensions: int = 768) -> None:
     """Creates vector schema indexes for DocumentChunk nodes if they do not exist."""

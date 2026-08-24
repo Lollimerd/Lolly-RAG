@@ -21,7 +21,7 @@ Makes full use of:
 """
 
 from __future__ import annotations
-
+from .queries import FALLBACK_DOCUMENT_SEARCH_QUERY, HYBRID_DOCUMENT_SEARCH_QUERY
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -45,166 +45,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-VECTOR_TOP_K = 30          # candidates fetched across hybrid index search branches
-RERANKER_TOP_N = 8         # documents passed to the LLM after reranking
-MAX_CONTENT_CHARS = 2500   # truncation for page_content fed to cross-encoder/LLM
-
-# Cypher: multi-index hybrid search (vector, fulltext, text) over DocumentChunk & Document nodes
-_HYBRID_DOCUMENT_SEARCH_QUERY = """
-CALL {
-    // 1. Vector Index Search over DocumentChunk embeddings
-    CALL db.index.vector.queryNodes('DocumentChunk_index', $top_k, $query_embedding)
-    YIELD node, score
-    RETURN node, score, 'vector' AS match_type
-    UNION
-    // 2. Fulltext Index Search over DocumentChunk (content, source)
-    CALL db.index.fulltext.queryNodes('DocumentChunk_keyword_index', $fulltext_query, {limit: $top_k})
-    YIELD node, score
-    RETURN node, score, 'fulltext_chunk' AS match_type
-    UNION
-    // 3. Fulltext Index Search over Document (filename, description) -> DocumentChunk
-    CALL db.index.fulltext.queryNodes('Document_keyword_index', $fulltext_query, {limit: $top_k})
-    YIELD node AS doc, score
-    MATCH (doc)-[:HAS_CHUNK]->(node:DocumentChunk)
-    RETURN node, score * 0.95 AS score, 'fulltext_doc' AS match_type
-    UNION
-    // 4. Text Index / Substring Search on DocumentChunk (source)
-    MATCH (node:DocumentChunk)
-    WHERE node.source IS NOT NULL AND (
-        toLower(node.source) CONTAINS toLower($question_clean)
-        OR toLower($question_clean) CONTAINS toLower(node.source)
-    )
-    RETURN node, 1.0 AS score, 'text_chunk_source' AS match_type
-    UNION
-    // 5. Text Index / Metadata Search on Document (filename, description, file_type, source) -> DocumentChunk
-    MATCH (doc:Document)-[:HAS_CHUNK]->(node:DocumentChunk)
-    WHERE (
-        (doc.filename IS NOT NULL AND (
-            toLower(doc.filename) CONTAINS toLower($question_clean)
-            OR toLower($question_clean) CONTAINS toLower(doc.filename)
-        ))
-        OR (doc.description IS NOT NULL AND toLower(doc.description) CONTAINS toLower($question_clean))
-        OR (doc.source IS NOT NULL AND toLower(doc.source) CONTAINS toLower($question_clean))
-        OR (doc.file_type IS NOT NULL AND size(doc.file_type) > 1 AND toLower($question_clean) CONTAINS toLower(doc.file_type))
-    )
-    RETURN node, 0.9 AS score, 'text_doc_metadata' AS match_type
-}
-WITH node AS chunk, 
-     max(score) AS max_score, 
-     collect(DISTINCT match_type) AS match_types
-MATCH (d:Document)-[:HAS_CHUNK]->(chunk)
-WITH chunk, max_score, match_types, d,
-     coalesce(chunk.communityId, chunk.CommunityId, d.communityId, d.CommunityId) AS raw_comm_id
-WHERE (
-    $str_community_ids IS NULL 
-    OR size($str_community_ids) = 0 
-    OR (
-        raw_comm_id IS NOT NULL AND (
-            toString(raw_comm_id) IN $str_community_ids
-            OR (
-                raw_comm_id IS :: LIST<ANY> 
-                AND ANY(c IN raw_comm_id WHERE toString(c) IN $str_community_ids)
-            )
-        )
-    )
-)
-RETURN
-    chunk.id          AS chunk_id,
-    chunk.content     AS content,
-    chunk.chunk_index AS chunk_index,
-    chunk.source      AS source,
-    raw_comm_id       AS community_id,
-    d.id              AS doc_id,
-    d.filename        AS filename,
-    d.file_type       AS file_type,
-    d.upload_date     AS upload_date,
-    d.user_id         AS user_id,
-    d.chunk_count     AS chunk_count,
-    d.description     AS description,
-    d.file_hash       AS file_hash,
-    max_score         AS score,
-    match_types       AS match_types
-ORDER BY score DESC
-LIMIT $top_k
-"""
-
-# Fallback query if Document_keyword_index fulltext index is not yet initialized
-_FALLBACK_DOCUMENT_SEARCH_QUERY = """
-CALL {
-    // 1. Vector Index Search over DocumentChunk embeddings
-    CALL db.index.vector.queryNodes('DocumentChunk_index', $top_k, $query_embedding)
-    YIELD node, score
-    RETURN node, score, 'vector' AS match_type
-    UNION
-    // 2. Fulltext Index Search over DocumentChunk (content, source)
-    CALL db.index.fulltext.queryNodes('DocumentChunk_keyword_index', $fulltext_query, {limit: $top_k})
-    YIELD node, score
-    RETURN node, score, 'fulltext_chunk' AS match_type
-    UNION
-    // 3. Text Index Search on DocumentChunk (source)
-    MATCH (node:DocumentChunk)
-    WHERE node.source IS NOT NULL AND (
-        toLower(node.source) CONTAINS toLower($question_clean)
-        OR toLower($question_clean) CONTAINS toLower(node.source)
-    )
-    RETURN node, 1.0 AS score, 'text_chunk_source' AS match_type
-    UNION
-    // 4. Text Index / Metadata Search on Document (filename, description, file_type) -> DocumentChunk
-    MATCH (doc:Document)-[:HAS_CHUNK]->(node:DocumentChunk)
-    WHERE (
-        (doc.filename IS NOT NULL AND (
-            toLower(doc.filename) CONTAINS toLower($question_clean)
-            OR toLower($question_clean) CONTAINS toLower(doc.filename)
-        ))
-        OR (doc.description IS NOT NULL AND toLower(doc.description) CONTAINS toLower($question_clean))
-        OR (doc.file_type IS NOT NULL AND size(doc.file_type) > 1 AND toLower($question_clean) CONTAINS toLower(doc.file_type))
-    )
-    RETURN node, 0.9 AS score, 'text_doc_metadata' AS match_type
-}
-WITH node AS chunk, 
-     max(score) AS max_score, 
-     collect(DISTINCT match_type) AS match_types
-MATCH (d:Document)-[:HAS_CHUNK]->(chunk)
-WITH chunk, max_score, match_types, d,
-     coalesce(chunk.communityId, chunk.CommunityId, d.communityId, d.CommunityId) AS raw_comm_id
-WHERE (
-    $str_community_ids IS NULL 
-    OR size($str_community_ids) = 0 
-    OR (
-        raw_comm_id IS NOT NULL AND (
-            toString(raw_comm_id) IN $str_community_ids
-            OR (
-                raw_comm_id IS :: LIST<ANY> 
-                AND ANY(c IN raw_comm_id WHERE toString(c) IN $str_community_ids)
-            )
-        )
-    )
-)
-RETURN
-    chunk.id          AS chunk_id,
-    chunk.content     AS content,
-    chunk.chunk_index AS chunk_index,
-    chunk.source      AS source,
-    raw_comm_id       AS community_id,
-    d.id              AS doc_id,
-    d.filename        AS filename,
-    d.file_type       AS file_type,
-    d.upload_date     AS upload_date,
-    d.user_id         AS user_id,
-    d.chunk_count     AS chunk_count,
-    d.description     AS description,
-    d.file_hash       AS file_hash,
-    max_score         AS score,
-    match_types       AS match_types
-ORDER BY score DESC
-LIMIT $top_k
-"""
+VECTOR_TOP_K = 100          # candidates fetched across hybrid index search branches
+RERANKER_TOP_N = 20         # documents passed to the LLM after reranking
+MAX_CONTENT_CHARS = 3500   # truncation for page_content fed to cross-encoder/LLM
 
 # ---------------------------------------------------------------------------
 # Lazy-initialised singletons
 # ---------------------------------------------------------------------------
 _compressor: Optional[CrossEncoderReranker] = None
-
 
 def _get_compressor() -> CrossEncoderReranker:
     """Build (or return cached) CrossEncoderReranker."""
@@ -263,14 +111,14 @@ def _search_document_chunks(
     }
 
     try:
-        records = graph.query(_HYBRID_DOCUMENT_SEARCH_QUERY, params=params)
+        records = graph.query(HYBRID_DOCUMENT_SEARCH_QUERY, params=params)
     except Exception as exc:
         logger.warning(
             "Primary hybrid document search failed (%s); attempting fallback query without Document_keyword_index.",
             exc,
         )
         try:
-            records = graph.query(_FALLBACK_DOCUMENT_SEARCH_QUERY, params=params)
+            records = graph.query(FALLBACK_DOCUMENT_SEARCH_QUERY, params=params)
         except Exception as fallback_exc:
             logger.error("Fallback document search failed: %s", fallback_exc)
             raise fallback_exc
@@ -350,8 +198,6 @@ def _records_to_documents(records: List[Dict[str, Any]]) -> List[Document]:
 # ---------------------------------------------------------------------------
 # Public LangChain tool
 # ---------------------------------------------------------------------------
-
-
 @tool
 def document_search_tool(question: str, community_ids: Optional[List[str]] = None) -> str:
     """

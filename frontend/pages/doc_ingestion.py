@@ -6,9 +6,20 @@ previewing, and managing unstructured documents (PDF, DOCX, TXT, Markdown)
 stored in the Neo4j knowledge graph with customizable destination folders.
 """
 
-import requests
 import streamlit as st
-from utils.ui_utils import BACKEND_URL
+from utils.doc_utils import (
+    FILE_TYPE_INFO,
+    INITIAL_FOLDERS,
+    SUPPORTED_TYPES,
+    delete_all_in_folder,
+    delete_document,
+    fetch_document_chunks,
+    fetch_documents,
+    get_all_folders,
+    parse_folder,
+    update_document_metadata,
+    upload_file,
+)
 
 # ---------------------------------------------------------------------------
 # Page configuration
@@ -19,139 +30,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-# ---------------------------------------------------------------------------
-# Constants & Helpers
-# ---------------------------------------------------------------------------
-INGEST_DOC_URL = f"{BACKEND_URL}/ingest/documents"
-SUPPORTED_TYPES = ["pdf", "docx", "txt", "md"]
-
-FILE_TYPE_INFO = {
-    "pdf": {"icon": "📕", "label": "PDF Document", "color": "#EF4444"},
-    "docx": {"icon": "📘", "label": "Word Document", "color": "#3B82F6"},
-    "txt": {"icon": "📄", "label": "Text File", "color": "#10B981"},
-    "md": {"icon": "📝", "label": "Markdown File", "color": "#8B5CF6"},
-}
-
-INITIAL_FOLDERS = ["Root", "Specifications", "Guides & Manuals", "Research", "Notes", "General"]
-
-
-def _fetch_documents() -> list[dict]:
-    """Fetch the list of all ingested documents from the backend."""
-    try:
-        resp = requests.get(INGEST_DOC_URL, timeout=10)
-        resp.raise_for_status()
-        return resp.json().get("documents", [])
-    except Exception as exc:
-        st.error(f"Failed to fetch document list: {exc}")
-        return []
-
-
-def _fetch_document_chunks(doc_id: str) -> list[dict]:
-    """Fetch chunks for a specific document."""
-    try:
-        resp = requests.get(f"{INGEST_DOC_URL}/{doc_id}/chunks", timeout=10)
-        resp.raise_for_status()
-        return resp.json().get("chunks", [])
-    except Exception:
-        return []
-
-
-def _upload_file(
-    file_bytes: bytes,
-    filename: str,
-    user_id: str,
-    description: str,
-    folder: str,
-    force: bool = False,
-) -> dict:
-    """POST a file to backend with folder metadata encoded in description."""
-    folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
-    full_description = f"{folder_prefix}{description}".strip()
-
-    resp = requests.post(
-        INGEST_DOC_URL,
-        files={"file": (filename, file_bytes, "application/octet-stream")},
-        data={
-            "user_id": user_id,
-            "description": full_description,
-            "force": str(force).lower(),
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _update_document_metadata(doc_id: str, folder: str, description: str) -> bool:
-    """Update folder/description for a document."""
-    folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
-    full_description = f"{folder_prefix}{description}".strip()
-    try:
-        resp = requests.put(
-            f"{INGEST_DOC_URL}/{doc_id}",
-            json={"description": full_description},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json().get("status") == "success"
-    except Exception as exc:
-        st.error(f"Failed to update document: {exc}")
-        return False
-
-
-def _delete_document(doc_id: str) -> bool:
-    """Delete a document and all its chunks from Neo4j."""
-    try:
-        resp = requests.delete(f"{INGEST_DOC_URL}/{doc_id}", timeout=10)
-        resp.raise_for_status()
-        return resp.json().get("status") == "success"
-    except Exception as exc:
-        st.error(f"Failed to delete document: {exc}")
-        return False
-
-
-def _delete_all_in_folder(files: list[dict]) -> tuple[int, int]:
-    """Delete all documents in a given list of files. Returns (succeeded, failed)."""
-    succeeded, failed = 0, 0
-    for doc in files:
-        doc_id = doc.get("id")
-        if doc_id:
-            if _delete_document(doc_id):
-                succeeded += 1
-            else:
-                failed += 1
-    return succeeded, failed
-
-
-def _parse_folder(description: str) -> tuple[str, str]:
-    """Extract folder name from description if prefixed like '[Folder] rest of desc'."""
-    desc = (description or "").strip()
-    if desc.startswith("[") and "]" in desc:
-        end_idx = desc.index("]")
-        folder = desc[1:end_idx].strip()
-        clean_desc = desc[end_idx + 1 :].strip()
-        return folder or "Root", clean_desc
-    return "Root", desc
-
-
-def _get_all_folders(docs: list[dict]) -> list[str]:
-    """Return sorted unique list of all folders (discovered + custom added)."""
-    if "custom_folders" not in st.session_state:
-        st.session_state["custom_folders"] = list(INITIAL_FOLDERS)
-
-    # Collect folders discovered from existing documents
-    discovered = {f for doc in docs for f, _ in [_parse_folder(doc.get("description", ""))]}
-
-    # Union with session custom folders
-    all_f = set(st.session_state["custom_folders"]).union(discovered)
-    if "Root" not in all_f:
-        all_f.add("Root")
-
-    # Return with 'Root' first, then alphabetical
-    others = sorted([f for f in all_f if f != "Root"])
-    return ["Root"] + others
-
 
 # ---------------------------------------------------------------------------
 # Upload Section with Customizable Folders
@@ -177,7 +55,7 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
     if "uploader_key" not in st.session_state:
         st.session_state["uploader_key"] = 0
 
-    all_folders = _get_all_folders(docs)
+    all_folders = get_all_folders(docs)
 
     col1, col2 = st.columns([0.55, 0.45])
 
@@ -253,7 +131,7 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
             with st.status(f"{icon} Ingesting `{file.name}` into folder `{target_folder}`...", expanded=False) as status:
                 try:
                     file_bytes = file.read()
-                    result = _upload_file(
+                    result = upload_file(
                         file_bytes=file_bytes,
                         filename=file.name,
                         user_id=user_id,
@@ -312,14 +190,14 @@ def _render_manage_folders_section(docs: list[dict]) -> None:
     st.subheader("📁 Manage Custom Destination Folders")
     st.caption("Add, inspect, or remove custom destination folders for organizing your documents.")
 
-    all_folders = _get_all_folders(docs)
+    all_folders = get_all_folders(docs)
 
     fcol1, fcol2 = st.columns([0.6, 0.4])
 
     with fcol1:
         st.markdown("#### 📂 Existing Folders")
         for folder in all_folders:
-            folder_docs = [d for d in docs if _parse_folder(d.get("description", ""))[0] == folder]
+            folder_docs = [d for d in docs if parse_folder(d.get("description", ""))[0] == folder]
             count = len(folder_docs)
             chunks = sum(d.get("chunk_count", 0) for d in folder_docs)
 
@@ -334,12 +212,12 @@ def _render_manage_folders_section(docs: list[dict]) -> None:
                                 st.markdown(f"**Clear all {count} files in `{folder}`?**")
                                 st.caption("This will remove all documents and their vector embeddings.")
                                 if st.button("⚠️ Confirm Clear", key=f"conf_clear_mgr_{folder}", type="primary"):
-                                    succ, _ = _delete_all_in_folder(folder_docs)
+                                    succ, _ = delete_all_in_folder(folder_docs)
                                     st.success(f"Deleted {succ} file(s) from `{folder}`")
                                     st.rerun()
                         else:
                             if st.button(f"🗑️ Clear ({count})", key=f"clear_mgr_{folder}"):
-                                succ, _ = _delete_all_in_folder(folder_docs)
+                                succ, _ = delete_all_in_folder(folder_docs)
                                 st.success(f"Deleted {succ} file(s) from `{folder}`")
                                 st.rerun()
                     elif folder != "Root":
@@ -427,7 +305,7 @@ def _render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders:
                 )
 
             if st.button("💾 Save Changes", key=f"save_meta_{doc_id}"):
-                if _update_document_metadata(doc_id, target_move_folder, new_desc_input):
+                if update_document_metadata(doc_id, target_move_folder, new_desc_input):
                     st.success(f"Updated `{filename}` to folder `{target_move_folder}`!")
                     if target_move_folder not in st.session_state.get("custom_folders", []):
                         st.session_state["custom_folders"].append(target_move_folder)
@@ -438,7 +316,7 @@ def _render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders:
 
         # Chunk Preview Section
         st.markdown("#### 🧩 Indexed Document Chunks")
-        chunks = _fetch_document_chunks(doc_id)
+        chunks = fetch_document_chunks(doc_id)
 
         if chunks:
             st.caption(f"Showing {len(chunks)} chunks retrieved from Neo4j vector store:")
@@ -459,7 +337,7 @@ def _render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders:
 
         st.divider()
         if st.button("🗑️ Delete Document & Chunks", key=f"del_inspect_{doc_id}", type="primary"):
-            if _delete_document(doc_id):
+            if delete_document(doc_id):
                 st.success(f"Deleted `{filename}`")
                 st.session_state["selected_doc_id"] = None
                 st.rerun()
@@ -475,7 +353,7 @@ def _render_explorer_view(docs: list[dict], all_folders: list[str]) -> None:
 
     enriched_docs = []
     for doc in docs:
-        folder, clean_desc = _parse_folder(doc.get("description", ""))
+        folder, clean_desc = parse_folder(doc.get("description", ""))
         enriched_docs.append({**doc, "_folder": folder, "_clean_desc": clean_desc})
 
     # Toolbar: Search, Grouping, View Mode, Refresh
@@ -498,7 +376,7 @@ def _render_explorer_view(docs: list[dict], all_folders: list[str]) -> None:
     with tcol3:
         view_mode = st.radio(
             "View Mode",
-            options=["🗂️ Grid", "📋 Table"],
+            options=["📋 Table", "🗂️ Grid"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -561,12 +439,12 @@ def _render_explorer_view(docs: list[dict], all_folders: list[str]) -> None:
                         st.markdown(f"**Delete all content in `{folder_name}`?**")
                         st.caption("This will permanently remove all files and their vector embeddings in Neo4j.")
                         if st.button("⚠️ Confirm Delete All", key=f"conf_del_all_{folder_name}", type="primary"):
-                            succ, _ = _delete_all_in_folder(folder_files)
+                            succ, _ = delete_all_in_folder(folder_files)
                             st.success(f"Deleted {succ} file(s) from `{folder_name}`")
                             st.rerun()
                 else:
                     if st.button(f"🗑️ Clear Folder ({len(folder_files)})", key=f"del_all_{folder_name}"):
-                        succ, _ = _delete_all_in_folder(folder_files)
+                        succ, _ = delete_all_in_folder(folder_files)
                         st.success(f"Deleted {succ} file(s) from `{folder_name}`")
                         st.rerun()
 
@@ -600,7 +478,7 @@ def _render_explorer_view(docs: list[dict], all_folders: list[str]) -> None:
                                     st.rerun()
                             with btn_col2:
                                 if st.button("🗑️ Delete", key=f"del_grid_{doc_id}"):
-                                    if _delete_document(doc_id):
+                                    if delete_document(doc_id):
                                         st.success(f"Deleted `{filename}`")
                                         if st.session_state.get("selected_doc_id") == doc_id:
                                             st.session_state["selected_doc_id"] = None
@@ -654,10 +532,9 @@ def _render_explorer_view(docs: list[dict], all_folders: list[str]) -> None:
                                 st.rerun()
                         with act_col2:
                             if st.button("🗑️ Delete File", key=f"del_tbl_{matched['id']}"):
-                                if _delete_document(matched["id"]):
+                                if delete_document(matched["id"]):
                                     st.success(f"Deleted `{selected_row}`")
                                     st.rerun()
-
 
 # ---------------------------------------------------------------------------
 # Main Page
@@ -684,8 +561,8 @@ def render_page() -> None:
     st.divider()
 
     user_id = st.session_state.get("user_name", "default")
-    docs = _fetch_documents()
-    all_folders = _get_all_folders(docs)
+    docs = fetch_documents()
+    all_folders = get_all_folders(docs)
 
     # Summary KPI banner
     total_docs = len(docs)
