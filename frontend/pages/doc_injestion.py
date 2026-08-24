@@ -63,6 +63,7 @@ def _upload_file(
     user_id: str,
     description: str,
     folder: str,
+    force: bool = False,
 ) -> dict:
     """POST a file to backend with folder metadata encoded in description."""
     folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
@@ -71,7 +72,11 @@ def _upload_file(
     resp = requests.post(
         INGEST_DOC_URL,
         files={"file": (filename, file_bytes, "application/octet-stream")},
-        data={"user_id": user_id, "description": full_description},
+        data={
+            "user_id": user_id,
+            "description": full_description,
+            "force": str(force).lower(),
+        },
         timeout=120,
     )
     resp.raise_for_status()
@@ -155,6 +160,23 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
     st.subheader("📤 Upload New Documents")
     st.caption("Upload documents to chunk, embed, and index into your Neo4j knowledge graph.")
 
+    # Display flash notification from recent upload
+    if "upload_flash" in st.session_state:
+        flash = st.session_state.pop("upload_flash")
+        f_type = flash.get("type", "info")
+        f_msg = flash.get("message", "")
+        if f_type == "success":
+            st.success(f_msg, icon="✅")
+        elif f_type == "warning":
+            st.warning(f_msg, icon="⚠️")
+        elif f_type == "info":
+            st.info(f_msg, icon="ℹ️")
+        elif f_type == "error":
+            st.error(f_msg, icon="❌")
+
+    if "uploader_key" not in st.session_state:
+        st.session_state["uploader_key"] = 0
+
     all_folders = _get_all_folders(docs)
 
     col1, col2 = st.columns([0.55, 0.45])
@@ -165,7 +187,18 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
             help="Supported formats: PDF, DOCX, TXT, Markdown",
+            key=f"file_uploader_{st.session_state['uploader_key']}",
         )
+
+        existing_filenames = {d.get("filename", "") for d in docs}
+        if uploaded_files:
+            dup_files = [f.name for f in uploaded_files if f.name in existing_filenames]
+            if dup_files:
+                st.info(
+                    f"ℹ️ **{len(dup_files)} duplicate file(s) detected:** `{', '.join(dup_files)}`. "
+                    "Duplicates will be skipped automatically unless overwrite is enabled.",
+                    icon="⏩",
+                )
 
     with col2:
         folder_options = all_folders + ["➕ Create New Folder..."]
@@ -196,12 +229,19 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
             key="upload_doc_desc",
         )
 
+        overwrite = st.checkbox(
+            "🔄 Overwrite if already ingested",
+            value=False,
+            help="If checked, existing documents with the same name will be replaced and re-embedded.",
+            key="upload_overwrite_chk",
+        )
+
         st.caption(f"Files will be saved under: 📂 **`{target_folder}`**")
 
     if uploaded_files and st.button("⬆️ Ingest Selected Files", type="primary"):
         total = len(uploaded_files)
         progress_bar = st.progress(0.0, text="Starting document ingestion...")
-        succeeded, failed = 0, 0
+        succeeded, skipped, failed = 0, 0, 0
 
         for idx, file in enumerate(uploaded_files):
             ext = file.name.rsplit(".", 1)[-1].lower() if "." in file.name else ""
@@ -219,14 +259,22 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
                         user_id=user_id,
                         description=description,
                         folder=target_folder or "Root",
+                        force=overwrite,
                     )
-                    if result.get("status") == "success":
+                    status_code = result.get("status")
+                    if status_code == "success":
                         chunk_count = result.get("chunk_count", 0)
                         status.update(
                             label=f"✅ `{file.name}` ({chunk_count} chunks stored in `{target_folder}`)",
                             state="complete",
                         )
                         succeeded += 1
+                    elif status_code == "skipped":
+                        status.update(
+                            label=f"⏩ `{file.name}` (Already ingested — duplicate skipped)",
+                            state="complete",
+                        )
+                        skipped += 1
                     else:
                         status.update(label=f"❌ `{file.name}` — {result.get('message')}", state="error")
                         failed += 1
@@ -238,12 +286,22 @@ def _render_upload_modal(user_id: str, docs: list[dict]) -> None:
 
         progress_bar.empty()
 
+        # Build flash notification for next render
         if succeeded == total:
-            st.success(f"🎉 Ingested {total} file(s) into folder `{target_folder}`!", icon="✅")
-        elif succeeded > 0:
-            st.warning(f"⚠️ {succeeded}/{total} files succeeded, {failed} failed.")
+            flash = {"type": "success", "message": f"🎉 Ingested {total} file(s) into folder `{target_folder}`!"}
+        elif skipped == total:
+            flash = {"type": "info", "message": f"⏩ All {total} file(s) were already ingested. Duplicate ingestion skipped."}
+        elif failed == 0:
+            flash = {"type": "success", "message": f"🎉 Processed {total} file(s): {succeeded} newly ingested, {skipped} duplicate(s) skipped."}
+        elif succeeded > 0 or skipped > 0:
+            flash = {"type": "warning", "message": f"⚠️ Processed with issues: {succeeded} ingested, {skipped} skipped, {failed} failed."}
         else:
-            st.error("❌ File ingestion failed. Check backend logs.")
+            flash = {"type": "error", "message": f"❌ File ingestion failed for all {total} file(s). Check backend logs."}
+
+        st.session_state["upload_flash"] = flash
+
+        # Clear the file uploader widget by incrementing key version
+        st.session_state["uploader_key"] += 1
         st.rerun()
 
 
