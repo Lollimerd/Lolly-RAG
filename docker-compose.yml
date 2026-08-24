@@ -21,7 +21,7 @@ services:
       - OLLAMA_KV_CACHE_TYPE=q4_0
       - OLLAMA_DEBUG=1
       - OLLAMA_MAX_LOADED_MODELS=3
-      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_KEEP_ALIVE=5m
       - OLLAMA_NUM_PARALLEL=2
     volumes:
       - ollama_data:/root/.ollama
