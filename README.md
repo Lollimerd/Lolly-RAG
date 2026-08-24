@@ -47,12 +47,14 @@ flowchart TD
 
 ## 🌟 Key Features
 
-* **🤖 Autonomous Agentic GraphRAG**: Powered by [`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search knowledge graphs or fallback gracefully to internal model knowledge.
-* **⚡ Vector + Graph Hybrid Search**: Combines Neo4j vector cosine similarity indexes on `Question`, `Answer`, `Tag`, and `User` nodes with Cypher graph relationship traversals and GPU-accelerated Cross-Encoder reranking (`ms-marco-MiniLM-L-6-v2`).
-* **📥 Dynamic Data Ingestion**: Live fetching from StackExchange / StackOverflow API with automatic node creation, vector embedding generation (`jina-embeddings-v2-base-en`), and relationship wiring in Neo4j.
-* **📊 Visual Graph Explorer & Analytics**: Interactive PyVis network visualizers, database summaries, entity count distribution charts, and Cypher query execution logs directly in Streamlit.
-* **🧠 Persistent Graph Memory & Session Repair**: Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`).
-* **🔮 Robust Middleware Pipeline**: Custom [`MermaidValidationMiddleware`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams.
+| Feature | Description |
+| :--- | :--- |
+| **🤖 Autonomous Agentic GraphRAG** | Powered by [`deepagents`](backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search knowledge graphs or fallback gracefully to internal model knowledge. |
+| **⚡ Vector + Graph Hybrid Search** | Combines Neo4j vector cosine similarity indexes on `Question`, `Answer`, `Tag`, and `User` nodes with Cypher graph relationship traversals and GPU-accelerated Cross-Encoder reranking (`ms-marco-MiniLM-L-6-v2`). |
+| **📥 Dynamic Data Ingestion** | Live fetching from StackExchange / StackOverflow API with automatic node creation, vector embedding generation (`jina-embeddings-v2-base-en`), and relationship wiring in Neo4j. |
+| **📊 Visual Graph Explorer & Analytics** | Interactive PyVis network visualizers, database summaries, entity count distribution charts, and Cypher query execution logs directly in Streamlit. |
+| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`). |
+| **🔮 Robust Middleware Pipeline** | Custom [`MermaidValidationMiddleware`](backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams. |
 
 ---
 
