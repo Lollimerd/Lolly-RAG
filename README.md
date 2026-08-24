@@ -1,6 +1,6 @@
-# 🍭 Lolly RAG: Agentic GraphRAG System for Technical Q&A
+# 🍭 Lolly RAG: Agentic GraphRAG System for Technical Documents & Q&A
 
-**Lolly RAG** is an end-to-end, high-performance **Agentic Graph Retrieval-Augmented Generation (GraphRAG)** application. It integrates local LLMs (via Ollama), Neo4j graph database vector indexing, and StackExchange knowledge bases to provide context-aware, verifiable engineering answers and dynamic graph visualizations.
+**Lolly RAG** is an end-to-end, high-performance **Agentic Graph Retrieval-Augmented Generation (GraphRAG)** application. It integrates local LLMs (via Ollama), Neo4j graph database vector and hybrid indexing, and document knowledge bases to provide context-aware, verifiable engineering answers and dynamic graph visualizations.
 
 ---
 
@@ -11,30 +11,31 @@ flowchart TD
     subgraph UI ["Frontend (Streamlit)"]
         WebUI["web_ui.py (Chat Interface)"]
         Explorer["pages/neo4j_explorer.py (Graph Explorer)"]
-        Loader["pages/loader.py (Data Ingestion UI)"]
-        Dashboard["pages/dashboard.py (System Dashboard)"]
+        DocIngestion["pages/doc_injestion.py (Document Explorer & Ingestion)"]
     end
 
     subgraph Backend ["Backend Service (FastAPI)"]
         API["app/main.py"]
-        Agent["agents/agent.py (StackExchange DeepAgent)"]
-        Tools["tools/stackexchange_search.py (GraphRAG Tool)"]
+        Agent["agents/agent.py (RAG Agent)"]
+        Tools["tools/document_search.py (Document Search Tool)"]
         Memory["utils/memory.py (Neo4j Session & User Memory)"]
+        DocProc["utils/doc_processor.py (Doc Chunking & Graph Ingestion)"]
         Middleware["middleware/mermaid.py (Syntax Validation)"]
     end
 
     subgraph Infrastructure ["Local AI & Graph Infrastructure"]
-        Neo4j[("Neo4j DB (5.26)\n- Vector Indexes\n- Cypher Graph")]
+        Neo4j[("Neo4j DB (5.26)\n- Vector Indexes\n- Fulltext & Text Indexes\n- Document & Chunk Graph")]
         Ollama[("Ollama Server\n- qwen3.5:4b\n- jina-embeddings-v2")]
         Reranker["Cross-Encoder Reranker\n(ms-marco-MiniLM-L-6-v2)"]
     end
 
     WebUI <-->|HTTP / SSE| API
     Explorer <-->|REST API| API
-    Loader <-->|REST API| API
-    Dashboard <-->|REST API| API
+    DocIngestion <-->|REST API| API
 
     API --> Agent
+    API --> DocProc
+    DocProc --> Neo4j
     Agent --> Tools
     Agent --> Middleware
     Tools --> Neo4j
@@ -47,10 +48,10 @@ flowchart TD
 
 ## 🌟 Key Features
 
-* **🤖 Autonomous Agentic GraphRAG**: Powered by [`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search knowledge graphs or fallback gracefully to internal model knowledge.
-* **⚡ Vector + Graph Hybrid Search**: Combines Neo4j vector cosine similarity indexes on `Question`, `Answer`, `Tag`, and `User` nodes with Cypher graph relationship traversals and GPU-accelerated Cross-Encoder reranking (`ms-marco-MiniLM-L-6-v2`).
-* **📥 Dynamic Data Ingestion**: Live fetching from StackExchange / StackOverflow API with automatic node creation, vector embedding generation (`jina-embeddings-v2-base-en`), and relationship wiring in Neo4j.
-* **📊 Visual Graph Explorer & Analytics**: Interactive PyVis network visualizers, database summaries, entity count distribution charts, and Cypher query execution logs directly in Streamlit.
+* **🤖 Autonomous Agentic GraphRAG**: Powered by [`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge.
+* **⚡ Vector + Graph Hybrid Search**: Combines Neo4j vector cosine similarity indexes on `DocumentChunk` nodes with fulltext keyword indexes on documents, text indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking (`ms-marco-MiniLM-L-6-v2`).
+* **📥 Multi-Format Document Ingestion**: Ingestion pipeline for PDFs, Word `.docx`, Markdown `.md`, and plain text `.txt` with automatic node creation, chunking, vector embedding generation (`jina-embeddings-v2-base-en`), and relationship wiring `(Document)-[:HAS_CHUNK]->(DocumentChunk)`.
+* **📊 Visual Graph Explorer & Analytics**: Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit.
 * **🧠 Persistent Graph Memory & Session Repair**: Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`).
 * **🔮 Robust Middleware Pipeline**: Custom [`MermaidValidationMiddleware`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams.
 
@@ -66,25 +67,23 @@ lolly-rag/
 │   ├── app/
 │   │   └── main.py               # FastAPI application & REST endpoints
 │   ├── middleware/
-│   │   ├── in_built.py           # Tool call state utilities
+│   │   ├── in_built.py           # Context & tool call middleware
 │   │   └── mermaid.py            # Mermaid diagram validation middleware
 │   ├── setup/
-│   │   ├── init_config.py        # Ollama LLM, embedding & Neo4j vector index setups
-│   │   └── neo4j_query_saved_cypher_2026-8-22.csv
+│   │   └── init_config.py        # Ollama LLM, embedding & Neo4j vector index setups
 │   ├── tools/
-│   │   ├── stackexchange_search.py  # GraphRAG search & StackExchange API importer
-│   │   └── template.py           # Tool templates & Cypher chains
+│   │   └── document_search.py    # Multi-index hybrid search & Cross-Encoder reranking
 │   ├── utils/
-│   │   ├── dashboard.py          # Neo4j query helpers & statistics
+│   │   ├── dashboard.py          # Neo4j query helpers & graph statistics
+│   │   ├── doc_processor.py      # Document parser, chunker & graph builder
 │   │   ├── memory.py             # User and chat session graph operations
-│   │   └── utils.py              # Environment & container diagnostic tools
+│   │   └── utils.py              # Environment & diagnostic tools
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
 │   ├── pages/
-│   │   ├── dashboard.py          # Dashboard analytics page
-│   │   ├── loader.py             # StackExchange data loader page
-│   │   └── neo4j_explorer.py     # Interactive Neo4j graph graph viewer
+│   │   ├── doc_injestion.py      # Document file explorer & upload page
+│   │   └── neo4j_explorer.py     # Interactive Neo4j graph viewer
 │   ├── utils/
 │   │   └── ui_utils.py           # Custom Streamlit UI components & layout helpers
 │   ├── web_ui.py                 # Main Streamlit chat app
@@ -119,7 +118,6 @@ OLLAMA_BASE_URL="http://localhost:11434"
 EMBEDDING_MODEL="jina/jina-embeddings-v2-base-en:latest"
 
 BACKEND_URL="http://localhost:8000"
-STACKEXCHANGE_API_KEY="your_optional_stackexchange_key"
 ```
 
 ### 3. Option A: Run Locally via `run.sh`
@@ -158,7 +156,6 @@ Model definitions and LLM parameters are set in [`backend/setup/init_config.py`]
 | Role | Default Model / Class | Function |
 | :--- | :--- | :--- |
 | **Answer LLM** | `qwen3.5:4b` | Agent reasoning, tool orchestration & answer generation |
-| **Cypher LLM** | `qwen3.5:4b` (temp=0.0) | Deterministic text-to-Cypher query generation |
 | **Embedding Model** | `jina-embeddings-v2-base-en` | 768-dim vector embeddings for Neo4j Vector Indexes |
 | **Reranker Model** | `ms-marco-MiniLM-L-6-v2` | PyTorch GPU cross-encoder candidate re-scoring |
 | **Summarizer LLM** | `qwen3.5:0.8b` | Historical chat context condensation |
@@ -176,17 +173,24 @@ Model definitions and LLM parameters are set in [`backend/setup/init_config.py`]
 * `GET /users`: Retrieve all registered users
 * `GET /user/{user_id}/chats`: Retrieve sessions for a specified user
 * `GET /chat/{session_id}`: Fetch message history for a session
-* `POST /query`: Primary agent query endpoint (supports SSE streaming)
+* `POST /agent/ask`: Primary agent query endpoint (supports SSE streaming)
 
-### Ingestion & Graph Analytics
-* `POST /ingest/stackexchange`: Trigger background StackExchange data fetch & graph ingestion
-* `GET /stats/summary`: Database node & relationship metrics
-* `GET /stats/entity-counts`: Categorical node count breakdowns
-* `POST /graph/search`: Full-text & Cypher search on knowledge nodes
-* `GET /graph/sample`: Graph network topology sample for visualization
+### Document Ingestion & Management
+* `POST /ingest/documents`: Upload and chunk document (`.pdf`, `.docx`, `.txt`, `.md`)
+* `GET /ingest/documents`: List uploaded documents metadata
+* `GET /ingest/documents/{doc_id}/chunks`: Retrieve chunks for a document
+* `PUT /ingest/documents/{doc_id}`: Update document description / folder metadata
+* `DELETE /ingest/documents/{doc_id}`: Delete document and associated chunks
+
+### Analytics & Graph
+* `GET /stats/summary`: Database document, user, session, and message metrics
+* `GET /stats/entity_counts`: Entity and relationship type counts
+* `GET /graph/search`: Search knowledge graph nodes
+* `POST /graph/sample`: Graph network topology sample for visualization
 
 ---
 
 ## 📄 License
 
 This project is open-source and available under the MIT License.
+

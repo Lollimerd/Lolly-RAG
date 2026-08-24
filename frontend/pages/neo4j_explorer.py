@@ -12,27 +12,27 @@ from utils.ui_utils import (
 
 # Color scheme for node types
 NODE_COLORS = {
-    "Question": "#3498db",  # Blue
-    "Answer": "#2ecc71",  # Green
-    "Tag": "#e67e22",  # Orange
-    "User": "#9b59b6",  # Purple
-    "ImportLog": "#95a5a6",  # Gray
+    "Document": "#3B82F6",       # Blue
+    "DocumentChunk": "#10B981",  # Green
+    "AppUser": "#8B5CF6",        # Purple
+    "Session": "#F59E0B",        # Amber
+    "Message": "#EC4899",        # Pink
 }
 
 # Icons for entity types
 NODE_ICONS = {
-    "Question": "❓",
-    "Answer": "💬",
-    "Tag": "🏷️",
-    "User": "👤",
-    "ImportLog": "📦",
+    "Document": "📄",
+    "DocumentChunk": "🧩",
+    "AppUser": "👤",
+    "Session": "💬",
+    "Message": "✉️",
 }
 
 REL_ICONS = {
-    "TAGGED": "🔗",
-    "ANSWERS": "💡",
-    "PROVIDED": "✍️",
-    "ASKED": "🙋",
+    "HAS_CHUNK": "🔗",
+    "HAS_SESSION": "📂",
+    "HAS_MESSAGE": "💬",
+    "LAST_MESSAGE": "📌",
 }
 
 
@@ -41,7 +41,7 @@ def format_tooltip(node_type: str, properties: dict) -> str:
     tooltip = f"Type: {node_type}\n"
 
     # Prioritize certain fields
-    priority_fields = ["title", "name", "display_name", "id"]
+    priority_fields = ["filename", "id", "description", "source", "topic", "type", "chunk_index"]
     sorted_keys = sorted(properties.keys(), key=lambda k: (k not in priority_fields, k))
 
     for key in sorted_keys:
@@ -123,7 +123,7 @@ def create_pyvis_graph(graph_data: dict, height: str = "600px") -> str:
             label=f"{icon} {node['label'][:25]}",
             title=tooltip,
             color=color,
-            size=30 if node_type == "Question" else 25,
+            size=32 if node_type == "Document" else 24,
             shape="dot",
         )
 
@@ -179,7 +179,7 @@ def render_page():
         # Focus Node Search
         st.markdown("##### 🎯 Focus on Node")
         search_term = st.text_input(
-            "Search Node (Title/Name)", placeholder="e.g. python"
+            "Search Node (Filename/Topic/ID)", placeholder="e.g. document"
         )
         focus_node_id = ""
 
@@ -197,8 +197,8 @@ def render_page():
 
         st.divider()
 
-        all_node_types = ["Question", "Answer", "Tag", "User"]
-        all_rel_types = ["TAGGED", "ANSWERS", "PROVIDED", "ASKED"]
+        all_node_types = ["Document", "DocumentChunk", "AppUser", "Session", "Message"]
+        all_rel_types = ["HAS_CHUNK", "HAS_SESSION", "HAS_MESSAGE", "LAST_MESSAGE"]
 
         selected_nodes = st.multiselect(
             "Node Types",
@@ -228,7 +228,7 @@ def render_page():
             if st.button("❌ Clear Focus"):
                 st.rerun()
 
-        refresh_btn = st.button("🔄 Refresh Graph", use_container_width=True)
+        refresh_btn = st.button("🔄 Refresh Graph", width="stretch")
 
     # Entity Counts Section
     st.subheader("📊 Database Entities")
@@ -243,32 +243,32 @@ def render_page():
 
         with col1:
             st.metric(
-                label=f"{NODE_ICONS['Question']} Questions",
-                value=f"{node_counts.get('Question', 0):,}",
+                label=f"{NODE_ICONS['Document']} Documents",
+                value=f"{node_counts.get('Document', 0):,}",
             )
 
         with col2:
             st.metric(
-                label=f"{NODE_ICONS['Answer']} Answers",
-                value=f"{node_counts.get('Answer', 0):,}",
+                label=f"{NODE_ICONS['DocumentChunk']} Chunks",
+                value=f"{node_counts.get('DocumentChunk', 0):,}",
             )
 
         with col3:
             st.metric(
-                label=f"{NODE_ICONS['Tag']} Tags",
-                value=f"{node_counts.get('Tag', 0):,}",
+                label=f"{NODE_ICONS['AppUser']} Users",
+                value=f"{node_counts.get('AppUser', 0):,}",
             )
 
         with col4:
             st.metric(
-                label=f"{NODE_ICONS['User']} Users",
-                value=f"{node_counts.get('User', 0):,}",
+                label=f"{NODE_ICONS['Session']} Sessions",
+                value=f"{node_counts.get('Session', 0):,}",
             )
 
         with col5:
             st.metric(
-                label=f"{NODE_ICONS['ImportLog']} Imports",
-                value=f"{node_counts.get('ImportLog', 0):,}",
+                label=f"{NODE_ICONS['Message']} Messages",
+                value=f"{node_counts.get('Message', 0):,}",
             )
 
         # Relationship counts
@@ -278,26 +278,26 @@ def render_page():
 
         with rcol1:
             st.metric(
-                label=f"{REL_ICONS['TAGGED']} Tagged",
-                value=f"{rel_counts.get('TAGGED', 0):,}",
+                label=f"{REL_ICONS['HAS_CHUNK']} Has Chunk",
+                value=f"{rel_counts.get('HAS_CHUNK', 0):,}",
             )
 
         with rcol2:
             st.metric(
-                label=f"{REL_ICONS['ANSWERS']} Answers",
-                value=f"{rel_counts.get('ANSWERS', 0):,}",
+                label=f"{REL_ICONS['HAS_SESSION']} Has Session",
+                value=f"{rel_counts.get('HAS_SESSION', 0):,}",
             )
 
         with rcol3:
             st.metric(
-                label=f"{REL_ICONS['PROVIDED']} Provided",
-                value=f"{rel_counts.get('PROVIDED', 0):,}",
+                label=f"{REL_ICONS['HAS_MESSAGE']} Has Message",
+                value=f"{rel_counts.get('HAS_MESSAGE', 0):,}",
             )
 
         with rcol4:
             st.metric(
-                label=f"{REL_ICONS['ASKED']} Asked",
-                value=f"{rel_counts.get('ASKED', 0):,}",
+                label=f"{REL_ICONS['LAST_MESSAGE']} Last Message",
+                value=f"{rel_counts.get('LAST_MESSAGE', 0):,}",
             )
 
     except Exception as e:
@@ -336,10 +336,10 @@ def render_page():
                 st.iframe(html_content, height=700)
             else:
                 st.warning(
-                    "No graph data found. Try importing some data first using the Loader page."
+                    "No graph data found. Try uploading documents first using Document Explorer."
                 )
-                if st.button("📥 Go to Dashboard & Importer"):
-                    st.switch_page("pages/dashboard.py")
+                if st.button("📁 Go to Document Explorer"):
+                    st.switch_page("pages/doc_injestion.py")
 
     except Exception as e:
         st.error(f"Could not load knowledge graph: {e}")
@@ -356,8 +356,8 @@ def render_page():
             st.rerun()
 
     with col2:
-        if st.button("📊 Go to Dashboard & Importer"):
-            st.switch_page("pages/dashboard.py")
+        if st.button("📁 Go to Document Explorer", key="nav_doc_exp"):
+            st.switch_page("pages/doc_injestion.py")
 
 
 render_page()

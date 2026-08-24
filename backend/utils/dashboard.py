@@ -5,85 +5,62 @@ import logging
 logger = logging.getLogger(__name__)
 
 def get_database_summary():
-    """Get summary statistics from the database."""
+    """Get summary statistics from the database for documents, users, sessions, and messages."""
     summary_query = """
-    MATCH (q:Question)
-    WITH count(q) as total_questions
-    MATCH (t:Tag)
-    WITH total_questions, count(t) as total_tags
-    MATCH (a:Answer)
-    WITH total_questions, total_tags, count(a) as total_answers
-    MATCH (u:User)
-    WITH total_questions, total_tags, total_answers, count(u) as total_users
-    MATCH (log:ImportLog)
-    WITH total_questions, total_tags, total_answers, total_users, count(log) as total_imports
-    MATCH (log:ImportLog)
-    WITH total_questions, total_tags, total_answers, total_users, total_imports, 
-         max(log.timestamp) as last_import
-    RETURN total_questions, total_tags, total_answers, total_users, total_imports, last_import
+    MATCH (d:Document)
+    WITH count(d) as total_documents
+    MATCH (dc:DocumentChunk)
+    WITH total_documents, count(dc) as total_chunks
+    MATCH (u:AppUser)
+    WITH total_documents, total_chunks, count(u) as total_users
+    MATCH (s:Session)
+    WITH total_documents, total_chunks, total_users, count(s) as total_sessions
+    MATCH (m:Message)
+    WITH total_documents, total_chunks, total_users, total_sessions, count(m) as total_messages
+    RETURN total_documents, total_chunks, total_users, total_sessions, total_messages
     """
     driver = get_graph_instance()
     result = driver.query(summary_query)
     if result and len(result) > 0:
-        res = result[0]
-        # Neo4j specific time might need str conversion
-        if res.get("last_import"):
-            res["last_import"] = str(res["last_import"])
-        return res
+        return result[0]
     return {
-        "total_questions": 0,
-        "total_tags": 0,
-        "total_answers": 0,
+        "total_documents": 0,
+        "total_chunks": 0,
         "total_users": 0,
-        "total_imports": 0,
-        "last_import": None,
+        "total_sessions": 0,
+        "total_messages": 0,
     }
 
 def get_import_history(limit: int = 20):
-    """Get recent import history from ImportLog nodes."""
-    history_query = """
-    MATCH (log:ImportLog)
-    RETURN log.id as id, log.timestamp as timestamp, log.total_questions as questions,
-           log.total_tags as tags, log.total_pages as pages, log.tags_list as tags_list,
-           coalesce(log.site, 'stackoverflow') as site
-    ORDER BY log.timestamp DESC
-    LIMIT $limit
-    """
-    driver = get_graph_instance()
-    result = driver.query(history_query, {"limit": limit})
-    if result:
-        for r in result:
-            if r.get("timestamp"):
-                r["timestamp"] = str(r["timestamp"])
-        return result
+    """Placeholder for legacy import history queries."""
     return []
 
 def get_entity_counts():
     """Get counts for all entity types and relationships in the database."""
     node_counts_query = """
     CALL {
-        MATCH (q:Question) RETURN 'Question' as label, count(q) as count
+        MATCH (d:Document) RETURN 'Document' as label, count(d) as count
         UNION ALL
-        MATCH (a:Answer) RETURN 'Answer' as label, count(a) as count
+        MATCH (dc:DocumentChunk) RETURN 'DocumentChunk' as label, count(dc) as count
         UNION ALL
-        MATCH (t:Tag) RETURN 'Tag' as label, count(t) as count
+        MATCH (u:AppUser) RETURN 'AppUser' as label, count(u) as count
         UNION ALL
-        MATCH (u:User) RETURN 'User' as label, count(u) as count
+        MATCH (s:Session) RETURN 'Session' as label, count(s) as count
         UNION ALL
-        MATCH (i:ImportLog) RETURN 'ImportLog' as label, count(i) as count
+        MATCH (m:Message) RETURN 'Message' as label, count(m) as count
     }
     RETURN label, count
     """
 
     rel_counts_query = """
     CALL {
-        MATCH ()-[r:TAGGED]->() RETURN 'TAGGED' as type, count(r) as count
+        MATCH ()-[r:HAS_CHUNK]->() RETURN 'HAS_CHUNK' as type, count(r) as count
         UNION ALL
-        MATCH ()-[r:ANSWERS]->() RETURN 'ANSWERS' as type, count(r) as count
+        MATCH ()-[r:HAS_SESSION]->() RETURN 'HAS_SESSION' as type, count(r) as count
         UNION ALL
-        MATCH ()-[r:PROVIDED]->() RETURN 'PROVIDED' as type, count(r) as count
+        MATCH ()-[r:HAS_MESSAGE]->() RETURN 'HAS_MESSAGE' as type, count(r) as count
         UNION ALL
-        MATCH ()-[r:ASKED]->() RETURN 'ASKED' as type, count(r) as count
+        MATCH ()-[r:LAST_MESSAGE]->() RETURN 'LAST_MESSAGE' as type, count(r) as count
     }
     RETURN type, count
     """
@@ -97,12 +74,17 @@ def get_entity_counts():
     return {"nodes": nodes, "relationships": relationships}
 
 def search_nodes(search_term: str, limit: int = 10):
-    """Search for nodes by title, name, or display_name."""
+    """Search for nodes by filename, description, content, source, id, or topic."""
     query = """
     MATCH (n)
-    WHERE n.title CONTAINS $term OR n.name CONTAINS $term OR n.display_name CONTAINS $term
+    WHERE (n.filename IS NOT NULL AND toLower(n.filename) CONTAINS toLower($term))
+       OR (n.description IS NOT NULL AND toLower(n.description) CONTAINS toLower($term))
+       OR (n.content IS NOT NULL AND toLower(n.content) CONTAINS toLower($term))
+       OR (n.source IS NOT NULL AND toLower(n.source) CONTAINS toLower($term))
+       OR (n.topic IS NOT NULL AND toLower(n.topic) CONTAINS toLower($term))
+       OR (n.id IS NOT NULL AND toLower(toString(n.id)) CONTAINS toLower($term))
     RETURN elementId(n) as id, labels(n)[0] as type, 
-           COALESCE(n.title, n.name, n.display_name) as label
+           COALESCE(n.filename, n.topic, n.source, substring(n.content, 0, 40), n.id, labels(n)[0]) as label
     LIMIT $limit
     """
     driver = get_graph_instance()
@@ -116,8 +98,8 @@ def get_graph_sample(
     focus_node_id: str = "",
 ):
     """Fetch a sample of nodes and relationships for visualization."""
-    all_node_types = ["Question", "Answer", "Tag", "User"]
-    all_rel_types = ["TAGGED", "ANSWERS", "PROVIDED", "ASKED"]
+    all_node_types = ["Document", "DocumentChunk", "AppUser", "Session", "Message"]
+    all_rel_types = ["HAS_CHUNK", "HAS_SESSION", "HAS_MESSAGE", "LAST_MESSAGE"]
 
     # Assign defaults if explicitly given empty lists
     if not node_types:
@@ -136,7 +118,7 @@ def get_graph_sample(
         MATCH path = (root)-[r*1..2]-(m)
         WHERE elementId(root) = $focus_node_id
         AND ALL(n IN nodes(path) WHERE labels(n)[0] IN $node_types)
-        And ALL(rel IN relationships(path) WHERE type(rel) IN $rel_types)
+        AND ALL(rel IN relationships(path) WHERE type(rel) IN $rel_types)
         WITH relationships(path) as rels
         UNWIND rels as r
         WITH startNode(r) as n, r, endNode(r) as m
@@ -146,20 +128,22 @@ def get_graph_sample(
             labels(n)[0] as source_label,
             properties(n) as source_props,
             CASE labels(n)[0]
-                WHEN 'Question' THEN COALESCE(n.title, 'Question ' + elementId(n))
-                WHEN 'Answer' THEN 'Answer ' + elementId(n)
-                WHEN 'Tag' THEN n.name
-                WHEN 'User' THEN COALESCE(n.display_name, 'User ' + elementId(n))
+                WHEN 'Document' THEN COALESCE(n.filename, 'Doc ' + elementId(n))
+                WHEN 'DocumentChunk' THEN 'Chunk ' + COALESCE(toString(n.chunk_index), elementId(n))
+                WHEN 'AppUser' THEN 'User ' + COALESCE(n.id, elementId(n))
+                WHEN 'Session' THEN COALESCE(n.topic, 'Session ' + elementId(n))
+                WHEN 'Message' THEN COALESCE(substring(n.content, 0, 30), 'Message ' + elementId(n))
                 ELSE elementId(n)
             END as source_name,
             elementId(m) as target_id,
             labels(m)[0] as target_label,
             properties(m) as target_props,
             CASE labels(m)[0]
-                WHEN 'Question' THEN COALESCE(m.title, 'Question ' + elementId(m))
-                WHEN 'Answer' THEN 'Answer ' + elementId(m)
-                WHEN 'Tag' THEN n.name
-                WHEN 'User' THEN COALESCE(n.display_name, 'User ' + elementId(n))
+                WHEN 'Document' THEN COALESCE(m.filename, 'Doc ' + elementId(m))
+                WHEN 'DocumentChunk' THEN 'Chunk ' + COALESCE(toString(m.chunk_index), elementId(m))
+                WHEN 'AppUser' THEN 'User ' + COALESCE(m.id, elementId(m))
+                WHEN 'Session' THEN COALESCE(m.topic, 'Session ' + elementId(m))
+                WHEN 'Message' THEN COALESCE(substring(m.content, 0, 30), 'Message ' + elementId(m))
                 ELSE elementId(m)
             END as target_name,
             type(r) as rel_type
@@ -168,7 +152,7 @@ def get_graph_sample(
             "node_types": node_types,
             "rel_types": rel_types,
             "limit": limit * 3,
-            "focus_node_id": str(focus_node_id),
+            "focus_node_id": focus_node_id,
         }
     else:
         query = """
@@ -182,20 +166,22 @@ def get_graph_sample(
             labels(n)[0] as source_label,
             properties(n) as source_props,
             CASE labels(n)[0]
-                WHEN 'Question' THEN COALESCE(n.title, 'Question ' + elementId(n))
-                WHEN 'Answer' THEN 'Answer ' + elementId(n)
-                WHEN 'Tag' THEN n.name
-                WHEN 'User' THEN COALESCE(n.display_name, 'User ' + elementId(n))
+                WHEN 'Document' THEN COALESCE(n.filename, 'Doc ' + elementId(n))
+                WHEN 'DocumentChunk' THEN 'Chunk ' + COALESCE(toString(n.chunk_index), elementId(n))
+                WHEN 'AppUser' THEN 'User ' + COALESCE(n.id, elementId(n))
+                WHEN 'Session' THEN COALESCE(n.topic, 'Session ' + elementId(n))
+                WHEN 'Message' THEN COALESCE(substring(n.content, 0, 30), 'Message ' + elementId(n))
                 ELSE elementId(n)
             END as source_name,
             elementId(m) as target_id,
             labels(m)[0] as target_label,
             properties(m) as target_props,
             CASE labels(m)[0]
-                WHEN 'Question' THEN COALESCE(m.title, 'Question ' + elementId(m))
-                WHEN 'Answer' THEN 'Answer ' + elementId(m)
-                WHEN 'Tag' THEN m.name
-                WHEN 'User' THEN COALESCE(m.display_name, 'User ' + elementId(m))
+                WHEN 'Document' THEN COALESCE(m.filename, 'Doc ' + elementId(m))
+                WHEN 'DocumentChunk' THEN 'Chunk ' + COALESCE(toString(m.chunk_index), elementId(m))
+                WHEN 'AppUser' THEN 'User ' + COALESCE(m.id, elementId(m))
+                WHEN 'Session' THEN COALESCE(m.topic, 'Session ' + elementId(m))
+                WHEN 'Message' THEN COALESCE(substring(m.content, 0, 30), 'Message ' + elementId(m))
                 ELSE elementId(m)
             END as target_name,
             type(r) as rel_type
@@ -236,8 +222,7 @@ def get_graph_sample(
             if len(nodes) >= limit * 1.5:
                 break
 
-    # Important: Neo4j datetime properties might not be directly serializable natively
-    # So we should convert datetime propertes inside node properties to strings
+    # Convert datetime properties inside node properties to strings
     for node in nodes:
         props = node.get("properties", {})
         for k, v in list(props.items()):

@@ -78,7 +78,6 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - OLLAMA_BASE_URL=http://localAI:11434
-      - STACKEXCHANGE_API_KEY=${STACKEXCHANGE_API_KEY}
       - HF_HUB_OFFLINE=1
       - HF_HOME=/home/appuser/.cache/huggingface
     volumes:
@@ -113,7 +112,6 @@ services:
       - 8501:8501
     environment:
       - BACKEND_URL=http://backend-server:8000
-      - STACKEXCHANGE_API_KEY=${STACKEXCHANGE_API_KEY}
     restart: unless-stopped
     networks:
       - lolly-rag

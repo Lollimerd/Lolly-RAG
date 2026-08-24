@@ -44,11 +44,10 @@ from utils.dashboard import (
     get_graph_sample,
 )
 
-from agents.agent import stackexchange_agent
+from agents.agent import rag_agent
 from utils.utils import (
     find_container_by_port,
     reset_tool_call_count,
-    import_query,
 )
 from utils.memory import (
     add_ai_message_to_session,
@@ -121,17 +120,6 @@ class QueryRequest(BaseModel):
     session_id: str
     user_id: str = "test_user"  # fallback
     mode: str = "auto"  # 'auto' or 'custom'
-
-
-class IngestRequest(BaseModel):
-    data: List[Dict]
-
-
-class ImportRecordRequest(BaseModel):
-    total_questions: int
-    tags_list: List[str]
-    total_pages: int
-    site: str = "stackoverflow"
 
 
 @system_router.get("/")
@@ -283,168 +271,7 @@ def delete_app_user(user_id: str):
         return {"status": "error", "message": str(e)}
 
 
-# ===========================================================================================================================================================
-# Ingestion Endpoints
-# ===========================================================================================================================================================
 
-@ingest_router.post("")
-async def ingest_stackoverflow_data(request: IngestRequest):
-    """Ingest StackOverflow data: compute embeddings and insert into Neo4j."""
-    try:
-        data_items = request.data
-        if not data_items:
-            return {"status": "skipped", "message": "No data items to ingest."}
-
-        # Use a separate thread for the heavy lifting (embeddings + DB)
-        # Memory-safe: micro-batch embeddings and chunked Neo4j writes
-        EMBED_BATCH_SIZE = 50  # texts per embedding call
-        WRITE_BATCH_SIZE = 50  # questions per Neo4j transaction
-
-        def process_ingestion(items):
-            embedder = embedding_model()
-            graph = get_graph_instance()
-
-            # 1. Prepare texts for batch embedding
-            texts_to_embed = []
-            map_to_object = []  # (type, parent_idx, answer_idx)
-
-            for q_idx, q in enumerate(items):
-                q_text = q.get("title", "") + "\n" + q.get("body_markdown", "")
-                texts_to_embed.append(q_text)
-                map_to_object.append(("question", q_idx, -1))
-
-                for a_idx, a in enumerate(q.get("answers", [])):
-                    a_text = q_text + "\n" + a.get("body_markdown", "")
-                    texts_to_embed.append(a_text)
-                    map_to_object.append(("answer", q_idx, a_idx))
-
-            # 2. Compute embeddings in micro-batches to limit memory
-            if texts_to_embed:
-                all_embeddings = []
-                for i in range(0, len(texts_to_embed), EMBED_BATCH_SIZE):
-                    batch = texts_to_embed[i : i + EMBED_BATCH_SIZE]
-                    batch_embeddings = embedder.embed_documents(batch)
-                    all_embeddings.extend(batch_embeddings)
-                    del batch, batch_embeddings
-
-                # 3. Assign embeddings back
-                for i, embedding in enumerate(all_embeddings):
-                    obj_type, q_idx, a_idx = map_to_object[i]
-                    if obj_type == "question":
-                        items[q_idx]["embedding"] = embedding
-                    elif obj_type == "answer":
-                        items[q_idx]["answers"][a_idx]["embedding"] = embedding
-
-                del all_embeddings, texts_to_embed, map_to_object
-
-            # 4. Insert into Neo4j in small chunks
-            for i in range(0, len(items), WRITE_BATCH_SIZE):
-                chunk = items[i : i + WRITE_BATCH_SIZE]
-                graph.query(import_query, {"data": chunk})
-                del chunk
-
-            count = len(items)
-            del items
-            gc.collect()
-            return count
-
-        count = await asyncio.to_thread(process_ingestion, data_items)
-
-        return {"status": "success", "count": count}
-
-    except Exception as e:
-        logger.error(f"Error during ingestion: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@ingest_router.post("/record")
-async def record_import_session(request: ImportRecordRequest):
-    """Record an import session in Neo4j."""
-    try:
-        import_id = str(uuid.uuid4())
-        timestamp = datetime.now().isoformat()
-
-        query = """
-        CREATE (log:ImportLog {
-            id: $import_id,
-            timestamp: datetime($timestamp),
-            total_questions: $total_questions,
-            total_tags: $total_tags,
-            total_pages: $total_pages,
-            tags_list: $tags_list,
-            site: $site
-        })
-        """
-
-        params = {
-            "import_id": import_id,
-            "timestamp": timestamp,
-            "total_questions": request.total_questions,
-            "total_tags": len(request.tags_list),
-            "total_pages": request.total_pages,
-            "tags_list": request.tags_list,
-            "site": request.site,
-        }
-
-        # Run query in thread
-        await asyncio.to_thread(get_graph_instance().query, query, params)
-
-        return {"status": "success", "import_id": import_id}
-    except Exception as e:
-        logger.error(f"Error recording import session: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@ingest_router.put("/record/{import_id}")
-async def update_import_session(import_id: str, request: ImportRecordRequest):
-    """Update an existing import session in Neo4j."""
-    try:
-        query = """
-        MATCH (log:ImportLog {id: $import_id})
-        SET log.total_questions = $total_questions,
-            log.total_tags = $total_tags,
-            log.total_pages = $total_pages,
-            log.tags_list = $tags_list,
-            log.site = $site
-        RETURN log
-        """
-
-        params = {
-            "import_id": import_id,
-            "total_questions": request.total_questions,
-            "total_tags": len(request.tags_list),
-            "total_pages": request.total_pages,
-            "tags_list": request.tags_list,
-            "site": request.site,
-        }
-
-        # Run query in thread
-        await asyncio.to_thread(get_graph_instance().query, query, params)
-
-        return {"status": "success", "message": f"Import session {import_id} updated"}
-    except Exception as e:
-        logger.error(f"Error updating import session: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@ingest_router.delete("/record/{import_id}")
-async def delete_import_session(import_id: str):
-    """Delete an import session from Neo4j."""
-    try:
-        query = """
-        MATCH (log:ImportLog {id: $import_id})
-        DETACH DELETE log
-        """
-
-        # Run query in thread
-        await asyncio.to_thread(
-            get_graph_instance().query, query, {"import_id": import_id}
-        )
-
-        return {"status": "success", "message": f"Import session {import_id} deleted"}
-    except Exception as e:
-        logger.error(f"Error deleting import session: {e}")
-        return {"status": "error", "message": str(e)}
 
 
 # ===========================================================================================================================================================
@@ -634,21 +461,9 @@ def _parse_chunk(chunk) -> tuple[str, str]:
 # Tool status message lookups
 _TOOL_START_MSG: dict[str, str] = {
     "document_search_tool": "📄 Searching uploaded documents...",
-    "graph_rag_tool": "🕷️ Searching StackExchange knowledge graph...",
 }
 _TOOL_END_MSG: dict[str, str] = {
     "document_search_tool": "✅ Document search completed",
-    "graph_rag_tool": "✅ Graph retrieval completed",
-}
-# chain_name -> (stage, start_message)
-_CHAIN_START: dict[str, tuple[str, str]] = {
-    "GraphTraversal": ("graph_traversal", "🕷️ Traversing Knowledge Graph..."),
-    "Reranking":      ("reranking",       "⚖️ Reranking Documents..."),
-}
-# chain_name -> (stage, count_label)
-_CHAIN_END: dict[str, tuple[str, str]] = {
-    "GraphTraversal": ("graph_traversal", "Found"),
-    "Reranking":      ("reranking",       "Top"),
 }
 
 
@@ -668,10 +483,6 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
         reset_tool_call_count(request.session_id)
         response_chunks = []
         response_thought_chunks = []
-
-        # Track the run_id of graph_rag_tool so we can suppress LLM stream, events that fire *inside* the tool (Cypher gen + QA steps).
-        # Only the final agent LLM response should be streamed to the frontend.
-        tool_run_id: str | None = None
 
         try:
             # 1. Prepare Input
@@ -721,7 +532,7 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                 logger.warning(f"Error saving user message: {e}")
 
             # 2. Stream Events from Agent Executor
-            async for event in stackexchange_agent.astream_events(
+            async for event in rag_agent.astream_events(
                 input_data, version="v2"
             ):
                 event_type = event["event"]
@@ -729,30 +540,14 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
 
                 # --- A. Tool status ---
                 if event_type == "on_tool_start":
-                    if event_name in ("graph_rag_tool", "document_search_tool"):
-                        tool_run_id = event.get("run_id")
                     msg = _TOOL_START_MSG.get(event_name, f"🛠️ Using tool: {event_name}...")
                     yield _sse({"type": "status", "stage": "tool_start", "status": "running", "message": msg})
 
                 elif event_type == "on_tool_end":
-                    if event_name in ("graph_rag_tool", "document_search_tool"):
-                        tool_run_id = None
                     msg = _TOOL_END_MSG.get(event_name, f"✅ Tool {event_name} completed")
                     yield _sse({"type": "status", "stage": "tool_end", "status": "complete", "message": msg})
 
-                # --- B. Internal chain steps (GraphTraversal & Reranking) ---
-                elif event_type == "on_chain_start" and event_name in _CHAIN_START:
-                    stage, message = _CHAIN_START[event_name]
-                    yield _sse({"type": "status", "stage": stage, "status": "running", "message": message})
-
-                elif event_type == "on_chain_end" and event_name in _CHAIN_END:
-                    stage, label = _CHAIN_END[event_name]
-                    output = event["data"].get("output", [])
-                    count = len(output) if isinstance(output, list) else 0
-                    msg = f"✅ {label} {count} documents" if label == "Found" else f"✅ {label} {count} documents selected"
-                    yield _sse({"type": "status", "stage": stage, "status": "complete", "message": msg, "count": count})
-
-                # --- C. Token streaming (final agent LLM only) ---
+                # --- B. Token streaming (final agent LLM only) ---
                 elif event_type == "on_chat_model_stream":
                     if "answer_llm" not in event.get("tags", []):
                         continue

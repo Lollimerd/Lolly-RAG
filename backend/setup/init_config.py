@@ -38,27 +38,6 @@ def answer_LLM():
     )
 
 
-def cypher_LLM():
-    """
-    Dedicated LLM for Cypher query generation inside GraphCypherQAChain.
-    Reasoning is explicitly disabled so that <think> tokens are never emitted
-    during the tool's internal LLM calls — preventing them from leaking into
-    the agent's streaming event bus and appearing as spurious thought output.
-    Lower temperature + greedy top_k/top_p gives deterministic, schema-faithful queries.
-    """
-    return ChatOllama(
-        model="qwen3.5:4b",
-        base_url=OLLAMA_BASE_URL,
-        num_ctx=40960, # system prompt + user query + schema + retrieved docs
-        num_predict=1024,  # Cypher queries are concise
-        temperature=0.0,  # fully deterministic — critical for valid Cypher
-        top_p=1.0,
-        top_k=1,
-        reasoning=False,  # MUST be False — no <think> tokens in tool steps
-        tags=["cypher_llm"],
-    )
-
-
 # embedding model — singleton to avoid reloading on every call
 # snowflake artic embed2
 @lru_cache(maxsize=1)
@@ -118,12 +97,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 def create_vector_indexes(driver, dimensions: int = 768) -> None:
-    """Creates vector schema indexes for Question, Answer, Tag, User, and DocumentChunk nodes if they do not exist."""
+    """Creates vector schema indexes for DocumentChunk nodes if they do not exist."""
     indexes = [
-        ("Question_index", "Question", "q"),
-        ("Answer_index", "Answer", "a"),
-        ("Tag_index", "Tag", "t"),
-        ("User_index", "User", "u"),
         ("DocumentChunk_index", "DocumentChunk", "dc"),
     ]
     for index_name, label, var in indexes:
@@ -144,12 +119,8 @@ def create_vector_indexes(driver, dimensions: int = 768) -> None:
             logger.warning(f"Could not create vector index {index_name}: {e}")
 
 def create_fulltext_indexes(driver) -> None:
-    """Creates fulltext schema indexes for Question, Answer, Tag, User, Document, and DocumentChunk nodes if they do not exist."""
+    """Creates fulltext schema indexes for Document and DocumentChunk nodes if they do not exist."""
     indexes = [
-        ("Question_keyword_index", "Question", ["title", "body"]),
-        ("Answer_keyword_index", "Answer", ["body"]),
-        ("Tag_keyword_index", "Tag", ["name"]),
-        ("User_keyword_index", "User", ["display_name"]),
         ("DocumentChunk_keyword_index", "DocumentChunk", ["content", "source"]),
         ("Document_keyword_index", "Document", ["filename", "description"]),
     ]
@@ -170,11 +141,9 @@ create_fulltext_index = create_fulltext_indexes
 
 
 def create_text_indexes(driver) -> None:
-    """Creates text schema indexes for Question, Answer, Tag, User, Document, and DocumentChunk nodes if they do not exist."""
+    """Creates text schema indexes for Document, DocumentChunk, and AppUser nodes if they do not exist."""
     indexes = [
-        ("Question_title_text_index", "Question", "title"),
-        ("Tag_name_text_index", "Tag", "name"),
-        ("User_display_name_text_index", "User", "display_name"),
+        ("AppUser_id_text_index", "AppUser", "id"),
         ("DocumentChunk_source_text_index", "DocumentChunk", "source"),
         ("Document_source_text_index", "Document", "source"),
         ("Document_filename_text_index", "Document", "filename"),
@@ -199,19 +168,7 @@ create_text_index = create_text_indexes
 def create_constraints(driver) -> None:
     """Creates minimum necessary constraints for data integrity and traversal optimization."""
     driver.query(
-        "CREATE CONSTRAINT question_id IF NOT EXISTS FOR (q:Question) REQUIRE (q.id) IS UNIQUE"
-    )
-    driver.query(
-        "CREATE CONSTRAINT answer_id IF NOT EXISTS FOR (a:Answer) REQUIRE (a.id) IS UNIQUE"
-    )
-    driver.query(
-        "CREATE CONSTRAINT user_id IF NOT EXISTS FOR (u:User) REQUIRE (u.id) IS UNIQUE"
-    )
-    driver.query(
-        "CREATE CONSTRAINT tag_name IF NOT EXISTS FOR (t:Tag) REQUIRE (t.name) IS UNIQUE"
-    )
-    driver.query(
-        "CREATE CONSTRAINT importlog_id IF NOT EXISTS FOR (i:ImportLog) REQUIRE (i.id) IS UNIQUE"
+        "CREATE CONSTRAINT appuser_id IF NOT EXISTS FOR (u:AppUser) REQUIRE (u.id) IS UNIQUE"
     )
     driver.query(
         "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE (s.id) IS UNIQUE"
@@ -226,88 +183,3 @@ def create_constraints(driver) -> None:
     create_vector_indexes(driver)
     create_fulltext_indexes(driver)
     create_text_indexes(driver)
-
-
-
-# print(f"\nschema: {graph.schema}\n")
-
-
-# test embedding generation
-# sample_embedding = EMBEDDINGS.embed_query("Hello world")
-# print(f"\nSample embedding dimension: {len(sample_embedding)}")
-
-# ===========================================================================================================================================================
-# Creation of vector index, vectorstores and fulltext for hybrid vector search
-# ===========================================================================================================================================================
-
-
-def create_vector_stores(graph, EMBEDDINGS, retrieval_query) -> Dict[str, Neo4jVector]:
-    """
-    Creates Neo4jVector stores from an existing graph using a data-driven approach.
-
-    Args:
-        graph: The Neo4j graph instance.
-        EMBEDDINGS: The embedding model.
-        retrieval_query: The Cypher query for retrieval.
-
-    Returns:
-        A dictionary of Neo4jVector store instances, keyed by their node label.
-    """
-
-    # Define a list of configurations for each vector store
-    store_configs = [
-        {
-            "node_label": "Tag",
-            "text_node_properties": ["name"],
-        },
-        {
-            "node_label": "User",
-            "text_node_properties": ["reputation", "display_name"],
-        },
-        {
-            "node_label": "Question",
-            "text_node_properties": [
-                "score",
-                "link",
-                "favourite_count",
-                "id",
-                "creation_date",
-                "body",
-                "title",
-            ],
-        },
-        {
-            "node_label": "Answer",
-            "text_node_properties": [
-                "score",
-                "is_accepted",
-                "id",
-                "body",
-                "creation_date",
-            ],
-        },
-    ]
-
-    vectorstores = {}
-
-    # Loop through the configurations and create the vectorstores & vector indexes
-    for config in store_configs:
-        label: str = str(config["node_label"])
-        text_props: List[str] = config["text_node_properties"]  # type: ignore[assignment]
-        index_name = f"{label}_index"
-        keyword_index_name = f"{label}_keyword_index"
-
-        vectorstores[label.lower() + "store"] = Neo4jVector.from_existing_graph(
-            graph=graph,
-            node_label=label,
-            embedding=EMBEDDINGS,
-            embedding_node_property="embedding",
-            index_name=index_name,
-            keyword_index_name=keyword_index_name,
-            search_type=SearchType.HYBRID,
-            text_node_properties=text_props,
-            retrieval_query=retrieval_query,
-        )
-        print(f"Created vectorstore for {index_name} index")
-
-    return vectorstores
