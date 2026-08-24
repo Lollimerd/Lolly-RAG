@@ -15,6 +15,7 @@ Flow:
 from __future__ import annotations
 
 import gc
+import hashlib
 import logging
 import os
 import uuid
@@ -52,10 +53,13 @@ ON CREATE SET
     d.upload_date = $upload_date,
     d.user_id     = $user_id,
     d.chunk_count = $chunk_count,
-    d.description = $description
+    d.description = $description,
+    d.file_hash   = $file_hash
 ON MATCH SET
     d.upload_date = $upload_date,
-    d.chunk_count = $chunk_count
+    d.chunk_count = $chunk_count,
+    d.description = $description,
+    d.file_hash   = $file_hash
 RETURN d.id AS id
 """
 
@@ -82,7 +86,8 @@ RETURN d.id          AS id,
        d.upload_date AS upload_date,
        d.user_id     AS user_id,
        d.chunk_count AS chunk_count,
-       d.description AS description
+       d.description AS description,
+       d.file_hash   AS file_hash
 ORDER BY d.upload_date DESC
 """
 
@@ -93,10 +98,18 @@ OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:DocumentChunk)
 DETACH DELETE d, c
 """
 
-# Check if a document exists
+# Check if a document exists by ID
 _GET_DOCUMENT_QUERY = """
 MATCH (d:Document {id: $doc_id})
 RETURN d.id AS id, d.filename AS filename
+"""
+
+# Query to find duplicate document by filename or file_hash
+_FIND_EXISTING_DOCUMENT_QUERY = """
+MATCH (d:Document)
+WHERE d.filename = $filename OR (d.file_hash IS NOT NULL AND d.file_hash <> '' AND d.file_hash = $file_hash)
+RETURN d.id AS id, d.filename AS filename, d.chunk_count AS chunk_count, d.file_hash AS file_hash
+LIMIT 1
 """
 
 # Get all chunks for a document
@@ -105,6 +118,21 @@ MATCH (d:Document {id: $doc_id})-[:HAS_CHUNK]->(c:DocumentChunk)
 RETURN c.id AS id, c.chunk_index AS chunk_index, c.content AS content, c.source AS source
 ORDER BY c.chunk_index ASC
 """
+
+
+def find_existing_document(
+    filename: str,
+    file_hash: Optional[str],
+    graph: Any,
+) -> Optional[Dict[str, Any]]:
+    """Check if a document with the same filename or content hash already exists in Neo4j."""
+    results = graph.query(
+        _FIND_EXISTING_DOCUMENT_QUERY,
+        params={"filename": filename, "file_hash": file_hash or ""},
+    )
+    if results and len(results) > 0:
+        return dict(results[0])
+    return None
 
 
 def get_document_chunks(doc_id: str, graph: Any) -> List[Dict[str, Any]]:
@@ -186,12 +214,13 @@ def embed_and_store_chunks(
     description: str,
     graph: Any,
     embedder: Any,
+    file_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Compute embeddings for all chunks (in micro-batches) and write them to Neo4j.
 
     Creates:
-        (d:Document {id, filename, file_type, upload_date, user_id, chunk_count, description})
+        (d:Document {id, filename, file_type, upload_date, user_id, chunk_count, description, file_hash})
         (c:DocumentChunk {id, content, chunk_index, source, embedding})
         (d)-[:HAS_CHUNK]->(c)
 
@@ -212,6 +241,7 @@ def embed_and_store_chunks(
             "user_id":     user_id,
             "chunk_count": chunk_count,
             "description": description,
+            "file_hash":   file_hash or "",
         },
     )
     logger.info("Document node created/updated: id=%s, filename=%s", doc_id, filename)
@@ -281,14 +311,38 @@ def process_uploaded_file(
     temp_dir: str = "/tmp/lolly_rag_uploads",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """
     End-to-end pipeline for a single uploaded file:
-        bytes → temp file → load → chunk → embed → store → cleanup
+        bytes → duplicate check → temp file → load → chunk → embed → store → cleanup
 
-    Designed to be called from a FastAPI endpoint in an async thread.
-    Returns the result dict from embed_and_store_chunks.
+    If the document already exists in Neo4j (by filename or file hash) and force=False,
+    skips processing and returns status='skipped'.
     """
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+    # Check for existing document
+    existing = find_existing_document(filename=filename, file_hash=file_hash, graph=graph)
+    if existing and not force:
+        logger.info(
+            "Document '%s' (hash=%s) already exists with id=%s. Skipping duplicate ingestion.",
+            filename,
+            file_hash[:8],
+            existing["id"],
+        )
+        return {
+            "status": "skipped",
+            "doc_id": existing["id"],
+            "filename": filename,
+            "chunk_count": existing.get("chunk_count", 0),
+            "message": f"Document '{filename}' was already ingested. Skipping duplicate ingestion.",
+        }
+
+    if existing and force:
+        logger.info("Force re-ingesting document '%s' (deleting existing id=%s).", filename, existing["id"])
+        delete_document(existing["id"], graph)
+
     os.makedirs(temp_dir, exist_ok=True)
     doc_id = str(uuid.uuid4())
     temp_path = os.path.join(temp_dir, f"{doc_id}_{filename}")
@@ -310,7 +364,10 @@ def process_uploaded_file(
             description=description,
             graph=graph,
             embedder=embedder,
+            file_hash=file_hash,
         )
+        result["status"] = "success"
+        result["message"] = f"Document '{filename}' ingested successfully with {result['chunk_count']} chunks."
         return result
 
     finally:
