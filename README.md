@@ -48,12 +48,14 @@ flowchart TD
 
 ## 🌟 Key Features
 
-* **🤖 Autonomous Agentic GraphRAG**: Powered by [`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge.
-* **⚡ Vector + Graph Hybrid Search**: Combines Neo4j vector cosine similarity indexes on `DocumentChunk` nodes with fulltext keyword indexes on documents, text indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking (`ms-marco-MiniLM-L-6-v2`).
-* **📥 Multi-Format Document Ingestion**: Ingestion pipeline for PDFs, Word `.docx`, Markdown `.md`, and plain text `.txt` with automatic node creation, chunking, vector embedding generation (`jina-embeddings-v2-base-en`), and relationship wiring `(Document)-[:HAS_CHUNK]->(DocumentChunk)`.
-* **📊 Visual Graph Explorer & Analytics**: Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit.
-* **🧠 Persistent Graph Memory & Session Repair**: Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`).
-* **🔮 Robust Middleware Pipeline**: Custom [`MermaidValidationMiddleware`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams.
+| Feature | Description | Key Tech & Highlights |
+| :--- | :--- | :--- |
+| **🤖 Autonomous Agentic GraphRAG** | Powered by [`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge. | LangChain, `deepagents`, Ollama LLMs |
+| **⚡ Vector + Graph Hybrid Search** | Combines Neo4j vector cosine similarity indexes on `DocumentChunk` nodes with fulltext keyword indexes on documents, text indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking. | Neo4j Vector Indexes, Fulltext Search, `ms-marco-MiniLM-L-6-v2` |
+| **📥 Multi-Format Document Ingestion** | Ingestion pipeline for PDFs, Word `.docx`, Markdown `.md`, and plain text `.txt` with automatic node creation, chunking, vector embedding generation, and relationship wiring `(Document)-[:HAS_CHUNK]->(DocumentChunk)`. | PDF / DOCX / MD / TXT, `jina-embeddings-v2-base-en` |
+| **📊 Visual Graph Explorer & Analytics** | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit. | PyVis Network Visualizer, Streamlit Analytics |
+| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`). | Neo4j Graph Sessions, Auto-Healing Graph Routines |
+| **🔮 Robust Middleware Pipeline** | Custom [`MermaidValidationMiddleware`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams. | Streaming Interceptors, Diagram Syntax Validation |
 
 ---
 
@@ -101,14 +103,51 @@ lolly-rag/
 
 ### 1. Prerequisites
 
-* **Python 3.13+** (or standard virtual environment manager like `uv` or `venv`)
-* **Docker & Docker Compose** (with NVIDIA Container Toolkit for GPU acceleration if available)
+* **Python 3.13+**
+* [**uv**](https://docs.astral.sh/uv/) (recommended fast Python package manager)
+* **Docker & Docker Compose** (for running Neo4j and optional containerized Ollama)
 * **Ollama** running locally or via Docker
 
-### 2. Environment Setup
+---
 
-Create or update your `.env` file in the root directory:
+### 2. Local Setup with `uv` (Recommended)
 
+#### Step 1: Install `uv`
+If you do not have `uv` installed, install it via:
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+#### Step 2: Clone and Sync Environment
+Clone the repository, create a virtual environment, and sync dependencies using `uv`:
+
+```bash
+git clone <repository-url>
+cd lolly-rag
+
+# Create virtual environment with Python 3.13
+uv venv --python 3.13
+
+# Activate virtual environment
+source .venv/bin/activate       # On Windows: .venv\Scripts\activate
+
+# Install and sync dependencies from uv.lock / pyproject.toml
+uv sync
+```
+
+#### Step 3: Configure Environment Variables
+Copy `.env.example` to `.env` and verify database and Ollama endpoints:
+
+```bash
+cp .env.example .env
+```
+
+Default `.env` configuration:
 ```env
 NEO4J_URL="bolt://localhost:7687"
 NEO4J_USERNAME="neo4j"
@@ -120,22 +159,53 @@ EMBEDDING_MODEL="jina/jina-embeddings-v2-base-en:latest"
 BACKEND_URL="http://localhost:8000"
 ```
 
-### 3. Option A: Run Locally via `run.sh`
+#### Step 4: Pull Required Ollama Models
+Ensure Ollama is running and download the models:
 
-Activate your environment and run the startup script:
+```bash
+ollama pull qwen3.5:4b
+ollama pull jina/jina-embeddings-v2-base-en:latest
+ollama pull qwen3.5:0.8b
+```
 
+#### Step 5: Start Neo4j
+Start a local Neo4j database container:
+
+```bash
+docker run -d \
+  --name lolly-neo4j \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/password \
+  neo4j:5.26
+```
+
+#### Step 6: Launch Applications
+
+**Option A: Unified Launch Script**
 ```bash
 chmod +x run.sh
 ./run.sh
 ```
 
-This starts:
-* **FastAPI Backend**: `http://localhost:8000` (Docs available at `http://localhost:8000/docs`)
-* **Streamlit Frontend**: `http://localhost:8501`
+**Option B: Manual / `uv run` Launch**
+```bash
+# Terminal 1: FastAPI Backend
+cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-### 4. Option B: Run with Docker Compose
+# Terminal 2: Streamlit Frontend
+cd frontend && uv run streamlit run web_ui.py --server.address 0.0.0.0
+```
 
-To spin up all services including Neo4j, Ollama, FastAPI, and Streamlit:
+Access the interfaces:
+* **Streamlit Web UI**: `http://localhost:8501`
+* **FastAPI Docs**: `http://localhost:8000/docs`
+* **Neo4j Browser**: `http://localhost:7474`
+
+---
+
+### 3. Alternative: Run with Docker Compose
+
+To spin up all services (Neo4j, Ollama, FastAPI backend, and Streamlit frontend) in containers:
 
 ```bash
 docker-compose up --build -d
@@ -146,6 +216,7 @@ Service Ports:
 * **FastAPI Backend**: `http://localhost:8000`
 * **Neo4j Browser**: `http://localhost:7474`
 * **Ollama API**: `http://localhost:11434`
+
 
 ---
 
