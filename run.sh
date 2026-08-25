@@ -1,5 +1,6 @@
 #!/bin/bash
 
+hf download cross-encoder/ms-marco-MiniLM-L-6-v2
 export HF_HUB_OFFLINE=1
 
 # init venv
