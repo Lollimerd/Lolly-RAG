@@ -24,6 +24,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=backend/requirements.txt,target=requirements.txt \
     uv pip install --system -r requirements.txt
 
+# Download reranker model from HuggingFace
+RUN hf download cross-encoder/ms-marco-MiniLM-L-6-v2
+
 # Create cache directories for HuggingFace and models, ensure appuser owns them so it can write models/logs
 RUN mkdir -p /home/appuser/.cache/huggingface /app/backend \
     && chown -R appuser:appuser /home/appuser /app
@@ -34,9 +37,6 @@ COPY --chown=appuser:appuser backend/ /app/backend/
 
 # Switch to non-privileged user
 USER appuser
-
-# Pre-download Hugging Face reranker model to enable offline execution
-RUN python3 -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 EXPOSE 8000
 
