@@ -38,7 +38,6 @@ FILE_TYPE_INFO: Dict[str, Dict[str, str]] = {
 
 INITIAL_FOLDERS: List[str] = [
     "Root",
-    "Guides & Manuals",
     "General",
 ]
 
