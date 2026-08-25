@@ -10,8 +10,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 # from streamlit_timeline import timeline
-from utils.ui_utils import (
+from utils.mermaid_utils import (
     render_message_with_mermaid,
+    repair_mermaid_content,
+)
+from utils.ui_utils import (
     display_container_name,
     get_system_config,
     fetch_all_users,
@@ -427,6 +430,12 @@ else:
                 # 5. Final Processing and Rendering
                 answer_placeholder.empty()
                 thought_placeholder.empty()
+
+                # Pre-repair any mermaid diagrams before final render and storage
+                if thought_content:
+                    thought_content = repair_mermaid_content(thought_content)
+                if answer_content:
+                    answer_content = repair_mermaid_content(answer_content)
 
                 with thought_container:
                     if thought_content:

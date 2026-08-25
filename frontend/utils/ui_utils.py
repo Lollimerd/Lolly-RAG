@@ -174,55 +174,12 @@ def format_docs_with_metadata(docs: List[Document]) -> str:
     )
 
 
-def render_message_with_mermaid(content, key_suffix=""):
-    """Parses a message and renders Markdown and Mermaid blocks separately."""
-    parts = re.split(
-        r"(```mermaid\s+.*?\s*```)", content, flags=re.DOTALL | re.IGNORECASE
-    )
-
-    for i, part in enumerate(parts):
-        part = part.strip()
-
-        if part.lower().startswith("```mermaid"):
-            # Extract mermaid code by removing fences
-            mermaid_code = part.removeprefix("```mermaid").removesuffix("```").strip()
-
-            if mermaid_code:
-                try:
-                    # Generate a unique ID for this diagram
-                    unique_id = f"mermaid-{uuid.uuid4()}"
-
-                    # Escape the code to prevent HTML injection/breaking
-                    escaped_code = html.escape(mermaid_code)
-
-                    # st_mermaid(mermaid_code)
-                    mermaid_html = f"""
-                        <div class="mermaid" id="{unique_id}">
-                            {escaped_code}
-                        </div>
-                        <script type="module">
-                            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-                            mermaid.initialize({{ startOnLoad: true }});
-                            try {{
-                                await mermaid.run({{
-                                    querySelector: '#{unique_id}'
-                                }});
-                            }} catch(e) {{
-                                console.error('Mermaid error:', e);
-                                const div = document.getElementById('{unique_id}');
-                                if (div) {{
-                                    div.innerHTML = '<pre style="color:red; background: #fee; padding: 10px; border-radius: 5px;">' + e.message + '</pre>';
-                                }}
-                            }}
-                        </script>
-                    """
-                    st.iframe(mermaid_html)
-                except Exception as e:
-                    st.error(f"Failed to render Mermaid diagram: {e}")
-                    st.code(mermaid_code, language="mermaid")
-        elif part:
-            # Render regular markdown
-            st.markdown(part)
+# --- Mermaid Rendering & Repair (Re-exported from mermaid_utils) ---
+from utils.mermaid_utils import (
+    render_message_with_mermaid,
+    repair_mermaid_content,
+    autofix_mermaid_code,
+)
 
 
 CONFIG_URL = f"{BACKEND_URL}/config"  # New API endpoint
