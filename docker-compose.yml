@@ -78,10 +78,8 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - OLLAMA_BASE_URL=http://localAI:11434
-      - HF_HUB_OFFLINE=1
+      - HF_HUB_OFFLINE=1 # TODO: Change this to 1 when we have all the models
       - HF_HOME=/home/appuser/.cache/huggingface
-    volumes:
-      - ~/.cache/huggingface:/home/appuser/.cache/huggingface:rw
     networks:
       - lolly-rag
     logging:

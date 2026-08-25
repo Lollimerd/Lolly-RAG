@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app" \
     UV_HTTP_TIMEOUT=300 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    HF_HOME="/home/appuser/.cache/huggingface"
 
 WORKDIR /app
 
@@ -33,6 +34,9 @@ COPY --chown=appuser:appuser backend/ /app/backend/
 
 # Switch to non-privileged user
 USER appuser
+
+# Pre-download Hugging Face reranker model to enable offline execution
+RUN python3 -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
 EXPOSE 8000
 
