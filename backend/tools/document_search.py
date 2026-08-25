@@ -45,9 +45,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-VECTOR_TOP_K = 100          # candidates fetched across hybrid index search branches
-RERANKER_TOP_N = 20         # documents passed to the LLM after reranking
-MAX_CONTENT_CHARS = 3500   # truncation for page_content fed to cross-encoder/LLM
+VECTOR_TOP_K = 1000          # candidates fetched across hybrid index search branches
+RERANKER_TOP_N = 25         # documents passed to the LLM after reranking
+MAX_CONTENT_CHARS = 5000   # truncation for page_content fed to cross-encoder/LLM
 
 # ---------------------------------------------------------------------------
 # Lazy-initialised singletons
