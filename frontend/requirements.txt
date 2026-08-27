@@ -1,8 +1,6 @@
 # Frontend & UI
-streamlit
-streamlit_timeline
-st_pages
-plotly
+streamlit>=1.36.0
+streamlit-markdown
 pyvis
 
 # Data & Utilities

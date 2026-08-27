@@ -1,376 +1,892 @@
+"""
+backend/middleware/mermaid.py
+-----------------------------
+Mermaid Validation and Auto-Correction Middleware for LangChain Agents.
+
+Features:
+1. Syntax validation before rendering: Comprehensive regex and AST-like structural
+   error detection (headers, delimiters, unclosed subgraphs, arrow connectors, reserved words).
+2. Auto-correction using LLM: Deterministic prompt with zero temperature to heal complex
+   diagram errors when fast rule-based repairs are insufficient.
+3. Configurable retry logic: Multi-pass progressive healing loop with configurable attempt limits.
+"""
+
 from __future__ import annotations
+
 import logging
+import os
 import re
-from typing import Any
-from langchain_core.messages import AIMessage
-from langchain.agents.middleware.types import AgentMiddleware, AgentState
+from typing import Any, Callable, List, Optional, Tuple
+
+from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Regex Patterns & Constants
 # ---------------------------------------------------------------------------
 
-# Valid first-token diagram types supported by Mermaid 10+
-_VALID_DIAGRAM_TYPES = {
+_FENCE_REGEX = re.compile(
+    r"```(?:mermaid|MERMAID|Mermaid)[ \t]*\r?\n?([\s\S]*?)```",
+    re.IGNORECASE,
+)
+
+_UNCLOSED_FENCE_REGEX = re.compile(
+    r"```(?:mermaid|MERMAID|Mermaid)[ \t]*\r?\n?([\s\S]+)$",
+    re.IGNORECASE,
+)
+
+VALID_HEADER_PATTERNS = (
+    r"^flowchart\s+(?:td|tb|bt|rl|lr)\b",
+    r"^graph\s+(?:td|tb|bt|rl|lr)\b",
+    r"^sequencediagram\b",
+    r"^classdiagram(?:-v2)?\b",
+    r"^statediagram(?:-v2)?\b",
+    r"^erdiagram\b",
+    r"^journey\b",
+    r"^gantt\b",
+    r"^pie\b",
+    r"^gitgraph\b",
+    r"^mindmap\b",
+    r"^quadrantchart\b",
+    r"^timeline\b",
+    r"^sankey-beta\b",
+    r"^requirementdiagram\b",
+    r"^packet-beta\b",
+    r"^block-beta\b",
+    r"^xychart-beta\b",
+    r"^architecture-beta\b",
+    r"^c4(?:context|container|component|dynamic|deployment)\b",
+    r"^zenuml\b",
+)
+
+HEADER_CORRECTIONS = {
+    "flowcharttd": "flowchart TD",
+    "flowchartlr": "flowchart LR",
+    "flowcharttb": "flowchart TB",
+    "flowchartbt": "flowchart BT",
+    "flowchartrl": "flowchart RL",
+    "graphtd": "graph TD",
+    "graphlr": "graph LR",
+    "graphtb": "graph TB",
+    "graphbt": "graph BT",
+    "graphrl": "graph RL",
+    "flow-chart td": "flowchart TD",
+    "flow-chart lr": "flowchart LR",
+    "flow-chart tb": "flowchart TB",
+    "flow-chart": "flowchart TD",
+    "flowchart": "flowchart TD",
+    "graph": "graph TD",
+    "sequence-diagram": "sequenceDiagram",
+    "sequence diagram": "sequenceDiagram",
+    "sequencediagram": "sequenceDiagram",
+    "class-diagram": "classDiagram",
+    "class diagram": "classDiagram",
+    "classdiagram": "classDiagram",
+    "state-diagram": "stateDiagram-v2",
+    "state diagram": "stateDiagram-v2",
+    "statediagram": "stateDiagram-v2",
+    "er-diagram": "erDiagram",
+    "er diagram": "erDiagram",
+    "erdiagram": "erDiagram",
+    "git-graph": "gitGraph",
+    "git graph": "gitGraph",
+    "gitgraph": "gitGraph",
+}
+
+RESERVED_NODE_WORDS = {
+    "end",
     "graph",
     "flowchart",
-    "sequencediagram",
-    "classDiagram",
-    "statediagram",
-    "statediagram-v2",
-    "erdiagram",
-    "journey",
-    "gantt",
-    "pie",
-    "quadrantchart",
-    "requirementdiagram",
-    "gitgraph",
-    "mindmap",
-    "timeline",
-    "xychart-beta",
-    "block-beta",
-    "packet-beta",
-    "kanban",
-    "architecture-beta",
-}
-
-# Mermaid reserved words that must NOT be used as bare node IDs
-_RESERVED_WORDS = {
-    "graph",
     "subgraph",
-    "end",
-    "style",
-    "classDef",
     "click",
-    "call",
-    "href",
-    "linkStyle",
+    "style",
     "class",
-    "direction",
+    "classDef",
+    "linkStyle",
+    "default",
+    "interpolate",
+    "call",
 }
 
+SHAPE_SPECIFICATIONS = [
+    ("[((", "))]", '[(( "', '" ))]'),
+    ("[([", "])]", '[([ "', '" ])]'),
+    ("[/", "/]", '[/ "', '" /]'),
+    ("[\\", "\\]", '[\\ "', '" \\]'),
+    ("[/", "\\]", '[/ "', '" \\]'),
+    ("[\\", "/]", '[\\ "', '" /]'),
+    ("[(((", "))) ]", '[((( "', '" )))]'),
+    ("[(((", ")))", '[((( "', '" )))]'),
+    ("[((", "))", '[(( "', '" ))]'),
+    ("[[", "]]", '[["', '"]]'),
+    ("[([", "])", '([["', '"]])'),
+    ("[(((", ")))", '([(("', '"))])'),
+    ("[(", ")]", '[("', '")]'),
+    ("([", "])", '(["', '"])'),
+    ("{{", "}}", '{{"', '"}}'),
+    ("(((", ")))", '((("', '")))'),
+    ("((", "))", '(("', '"))'),
+    (">", "]", '>"', '"]'),
+    ("{", "}", '{"', '"}'),
+    ("(", ")", '("', '")'),
+    ("[", "]", '["', '"]'),
+]
+
 
 # ---------------------------------------------------------------------------
-# Validation helpers
+# Quote-Aware Parsing Helpers
 # ---------------------------------------------------------------------------
-def _extract_mermaid_blocks(text: str) -> list[tuple[int, int, str]]:
+
+def _split_by_quotes(line: str) -> list[tuple[str, bool]]:
+    """Split line into alternating (unquoted, quoted) segments."""
+    segments: list[tuple[str, bool]] = []
+    in_quote = False
+    current: list[str] = []
+    escaped = False
+
+    for ch in line:
+        if ch == "\\" and not escaped:
+            escaped = True
+            current.append(ch)
+            continue
+
+        if ch == '"' and not escaped:
+            if in_quote:
+                current.append(ch)
+                segments.append(("".join(current), True))
+                current = []
+                in_quote = False
+            else:
+                if current:
+                    segments.append(("".join(current), False))
+                    current = []
+                current.append(ch)
+                in_quote = True
+        else:
+            current.append(ch)
+        escaped = False
+
+    if current:
+        segments.append(("".join(current), in_quote))
+
+    return segments
+
+
+def _find_shape_close(text: str, start_idx: int, open_delim: str, close_delim: str) -> int:
+    """Find matching shape close delimiter respecting nesting."""
+    depth = 0
+    balance_open = None
+    balance_close = None
+    if open_delim in ("(", "((", "(((") and close_delim in (")", "))", ")))"):
+        balance_open, balance_close = "(", ")"
+    elif open_delim in ("[", "[[") and close_delim in ("]", "]]"):
+        balance_open, balance_close = "[", "]"
+    elif open_delim in ("{", "{{") and close_delim in ("}", "}}"):
+        balance_open, balance_close = "{", "}"
+
+    i = start_idx
+    delim_len = len(close_delim)
+    while i <= len(text) - delim_len:
+        if text[i : i + delim_len] == close_delim and depth == 0:
+            return i
+        if balance_open and text[i] == balance_open:
+            depth += 1
+        elif balance_close and text[i] == balance_close:
+            if depth > 0:
+                depth -= 1
+        i += 1
+
+    return text.find(close_delim, start_idx)
+
+
+# ---------------------------------------------------------------------------
+# 1. Syntax Validation Before Rendering
+# ---------------------------------------------------------------------------
+
+def find_mermaid_errors(code: str) -> list[str]:
     """
-    Find all ```mermaid ... ``` blocks in *text*.
-
-    Returns a list of (start_index, end_index, block_content) tuples so the
-    caller can replace them by position without regex on the full content.
-    """
-    results = []
-    for m in re.finditer(
-        r"```mermaid\s+(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE
-    ):
-        results.append((m.start(), m.end(), m.group(1)))
-    return results
-
-
-def _validate_mermaid_block(code: str) -> list[str]:
-    """
-    Perform lightweight server-side Mermaid syntax validation.
-
-    Returns a list of human-readable error strings. An empty list means
-    the block passed all checks.
+    Scans a Mermaid diagram string for syntax, structural, and delimiter errors.
+    Returns a list of human-readable error descriptions.
     """
     errors: list[str] = []
-    lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
+    raw_lines = code.strip().splitlines()
+    lines = [line.strip() for line in raw_lines if line.strip()]
 
     if not lines:
-        errors.append("Mermaid block is empty.")
-        return errors
+        return ["Empty or blank Mermaid diagram"]
 
-    # -----------------------------------------------------------------
-    # 1. Check that the first token is a recognised diagram type
-    # -----------------------------------------------------------------
-    first_line = lines[0]
-    first_token = first_line.split()[0].lower().rstrip(":")
-    if first_token not in {d.lower() for d in _VALID_DIAGRAM_TYPES}:
-        errors.append(
-            f"Unknown or missing diagram type on the first line: '{first_line}'. "
-            f"Expected one of: flowchart, sequenceDiagram, classDiagram, etc."
-        )
-
-    # -----------------------------------------------------------------
-    # 2. Detect reserved words used as bare node IDs
-    #    Pattern: bare word immediately followed by [ or { or ( or >
-    # -----------------------------------------------------------------
-    reserved_node_pattern = re.compile(
-        r"\b(" + "|".join(re.escape(w) for w in _RESERVED_WORDS) + r")\s*[\[\({>]",
-        re.IGNORECASE,
-    )
-    for i, line in enumerate(lines[1:], start=2):
-        match = reserved_node_pattern.search(line)
-        if match:
-            errors.append(
-                f"Line {i}: Reserved word '{match.group(1)}' used as a node ID. "
-                "Use a different alphanumeric identifier instead."
-            )
-
-    # -----------------------------------------------------------------
-    # 3. Check for unclosed brackets / parentheses / braces
-    # -----------------------------------------------------------------
-    bracket_map = {"[": "]", "(": ")", "{": "}"}
-    stack: list[tuple[str, int]] = []
-    for i, line in enumerate(lines, start=1):
-        # Skip comment lines
+    # Filter out YAML frontmatter or comments to find first effective line
+    first_code_line = ""
+    in_frontmatter = False
+    for line in lines:
+        if line == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter:
+            continue
         if line.startswith("%%"):
             continue
-        for ch in line:
-            if ch in bracket_map:
-                stack.append((ch, i))
-            elif ch in bracket_map.values():
-                if stack and bracket_map[stack[-1][0]] == ch:
-                    stack.pop()
-                # Mismatched close bracket — skip to avoid false positives
-    if stack:
-        locs = ", ".join(f"line {ln}" for _, ln in stack)
-        errors.append(f"Unclosed bracket(s) found at: {locs}.")
+        first_code_line = line
+        break
 
-    # -----------------------------------------------------------------
-    # 4. Spaces / hyphens / special chars in node IDs (flowchart/graph)
-    # -----------------------------------------------------------------
-    if first_token in {"graph", "flowchart"}:
-        bad_id_pattern = re.compile(
-            r"\b([A-Za-z0-9_]+(?:[\s\-][A-Za-z0-9_]+)+)\s*[\[\({>]"
-        )
-        for i, line in enumerate(lines[1:], start=2):
-            match = bad_id_pattern.search(line)
-            if match:
-                errors.append(
-                    f"Line {i}: Node ID '{match.group(1)}' contains spaces or hyphens. "
-                    "Node IDs must be a single alphanumeric word (e.g. 'MyNode')."
-                )
+    if not first_code_line:
+        return ["No valid diagram content found (comments or frontmatter only)"]
 
-    # -----------------------------------------------------------------
-    # 5. Check that descriptive node labels are wrapped in double-quotes
-    #    e.g.  NodeA[This is bad]  vs  NodeA["This is good"]
-    # -----------------------------------------------------------------
-    if first_token in {"graph", "flowchart"}:
-        unquoted_label_pattern = re.compile(
-            r'\[(?!")([^\]]*\s[^\]]*)\]'  # [text with spaces] but NOT ["..."]
+    # 1. Header Validation
+    header_lower = first_code_line.lower().strip()
+    has_valid_header = any(re.match(pattern, header_lower, re.IGNORECASE) for pattern in VALID_HEADER_PATTERNS)
+
+    if not has_valid_header:
+        errors.append(
+            f"Missing or malformed diagram header declaration on line 1: '{first_code_line}'"
         )
-        for i, line in enumerate(lines[1:], start=2):
-            if line.startswith("%%"):
+
+    # 2. Delimiter and Subgraph Balance
+    sq_open = sq_close = 0
+    paren_open = paren_close = 0
+    curly_open = curly_close = 0
+    pipe_count = 0
+    subgraph_open = 0
+    subgraph_closed = 0
+    seq_block_open = 0
+    seq_block_closed = 0
+
+    is_seq_diagram = "sequencediagram" in header_lower
+
+    for idx, line in enumerate(lines, 1):
+        if line.startswith("%%") or line == "---":
+            continue
+
+        line_clean = line.strip()
+
+        # Non-diagram commentary detection
+        if (
+            line_clean.startswith(("- ", "* ", "1. ", "2. ", "3. ", "Note: ", "Here is ", "Explanation:"))
+            and not is_seq_diagram
+            and "-->" not in line_clean
+            and "[" not in line_clean
+        ):
+            errors.append(f"Line {idx}: Non-diagram commentary or markdown list detected: '{line_clean}'")
+
+        # Track subgraph balance
+        if re.match(r"^subgraph\b", line_clean, re.IGNORECASE):
+            subgraph_open += 1
+        elif line_clean.lower() == "end" or re.match(r"^end\b", line_clean, re.IGNORECASE):
+            subgraph_closed += 1
+            if is_seq_diagram:
+                seq_block_closed += 1
+
+        # Track sequence diagram block keywords
+        if is_seq_diagram and re.match(r"^(loop|alt|opt|par|critical|rect)\b", line_clean, re.IGNORECASE):
+            seq_block_open += 1
+
+        if not is_seq_diagram:
+            for seg, is_q in _split_by_quotes(line):
+                if not is_q:
+                    # Single dash arrow detection
+                    if re.search(r"(?<![\-\.\=\>\<])\s*->\s*(?![\-\.\=\>\<])", seg):
+                        errors.append(f"Line {idx}: Single dash arrow '->' detected; flowchart requires '-->' or '--o'")
+                    # Reserved keyword node IDs
+                    if re.search(r"\b(end|graph|flowchart|subgraph)\s*(?:\[|\(|\{|\>|\-\-|\=\=)", seg, re.IGNORECASE):
+                        if not re.match(r"^(subgraph|graph|flowchart)\b", line_clean, re.IGNORECASE):
+                            errors.append(f"Line {idx}: Reserved keyword used as standalone node identifier")
+                    # Unquoted labels with special characters
+                    unquoted_paren_match = re.search(r"\w+\s*\[([^\"\]]*[\(\):,][^\"\]]*)\]", seg)
+                    if unquoted_paren_match:
+                        errors.append(f"Line {idx}: Unquoted node label with special characters: '[{unquoted_paren_match.group(1)}]'")
+
+        flag_count = len(re.findall(r"\b\w+\s*>\s*(?:\"[^\"]*\"|[^\]]+)\]", line_clean))
+        sq_open += flag_count
+
+        for seg, is_q in _split_by_quotes(line):
+            if is_q:
                 continue
-            match = unquoted_label_pattern.search(line)
-            if match:
-                errors.append(
-                    f"Line {i}: Node label '{match.group(1)}' contains spaces but is "
-                    "not quoted. Wrap multi-word labels in double quotes: "
-                    f'["{match.group(1)}"].'
-                )
+            sq_open += seg.count("[")
+            sq_close += seg.count("]")
+            paren_open += seg.count("(")
+            paren_close += seg.count(")")
+            curly_open += seg.count("{")
+            curly_close += seg.count("}")
+            pipe_count += seg.count("|")
+
+    if sq_open != sq_close:
+        errors.append(f"Unbalanced square brackets: {sq_open} '[' vs {sq_close} ']'")
+    if paren_open != paren_close:
+        errors.append(f"Unbalanced parentheses: {paren_open} '(' vs {paren_close} ')'")
+    if curly_open != curly_close:
+        errors.append(f"Unbalanced curly braces: {curly_open} '{{' vs {curly_close} '}}'")
+    if pipe_count % 2 != 0:
+        errors.append(f"Unbalanced link label pipe symbols '|' ({pipe_count} total)")
+
+    if subgraph_open > subgraph_closed:
+        errors.append(f"Unclosed subgraph block: {subgraph_open} 'subgraph' vs {subgraph_closed} 'end'")
+    elif subgraph_closed > subgraph_open and not is_seq_diagram:
+        errors.append(f"Orphaned 'end' statement without matching 'subgraph'")
+
+    if is_seq_diagram and seq_block_open > seq_block_closed:
+        errors.append(f"Unclosed sequence diagram block: {seq_block_open} open blocks vs {seq_block_closed} 'end'")
 
     return errors
 
 
+def validate_mermaid(code: str) -> tuple[bool, list[str]]:
+    """
+    Validates a Mermaid diagram string.
+    Returns (True, []) if valid, or (False, [error_messages]) if errors were detected.
+    """
+    errors = find_mermaid_errors(code)
+    return len(errors) == 0, errors
+
+
 # ---------------------------------------------------------------------------
-# Auto-fix helpers  (deterministic, no model call)
+# Rule-Based Progressive Healing Passes
 # ---------------------------------------------------------------------------
-def _fix_unquoted_labels(code: str) -> str:
-    """
-    Wrap unquoted multi-word node labels in double-quotes.
-    e.g.  NodeA[My Label]  ->  NodeA["My Label"]
-          NodeA(My Label)  ->  NodeA("My Label")
-    Leaves already-quoted strings alone.
-    """
 
-    def _quote_bracket(m: re.Match) -> str:
-        open_b, inner, close_b = m.group(1), m.group(2), m.group(3)
-        close_map = {"[": "]", "(": ")", "{": "}"}
-        expected_close = close_map.get(open_b, close_b)
-        return f'{open_b}"{inner}"{expected_close}'
+def _fix_unquoted_labels_on_line(line: str) -> str:
+    """Wraps unquoted labels for all Mermaid shapes in double quotes."""
+    line_clean = line.strip()
+    if not line_clean or line_clean.startswith("%%") or line_clean.startswith("---"):
+        return line
 
-    # Match [text with spaces] / (text with spaces) / {text with spaces}
-    # but not already-quoted ["..."] / ("...") / {"..."}
-    pattern = re.compile(r'([\[\({])(?!")([^\]\)\}"]+\s[^\]\)\}"]*?)(?<!\")([\]\)}])')
-    return pattern.sub(_quote_bracket, code)
+    first_token = line_clean.split()[0].lower()
+    if first_token in ("flowchart", "graph", "sequencediagram", "classdiagram", "statediagram", "direction"):
+        return line
 
+    specs = sorted(SHAPE_SPECIFICATIONS, key=lambda s: len(s[0]), reverse=True)
+    openings_pattern = "|".join(re.escape(s[0]) for s in specs)
+    node_pattern = re.compile(rf"(\b[a-zA-Z0-9_]+)\s*({openings_pattern})")
 
-def _fix_reserved_node_ids(code: str) -> str:
-    """
-    Prefix reserved words used as bare node IDs with an underscore.
-    e.g.  end[End Process]  ->  _end[End Process]
-    Only applies when the reserved word appears at the start of a line
-    (after optional whitespace) or right after a connection arrow.
-    """
-    reserved_pattern = re.compile(
-        r"(?<![A-Za-z0-9_])("
-        + "|".join(re.escape(w) for w in _RESERVED_WORDS)
-        + r")(\s*[\[\({>])",
-        re.IGNORECASE,
-    )
+    pos = 0
+    result: list[str] = []
 
-    def _replace(m: re.Match) -> str:
-        return f"_{m.group(1)}{m.group(2)}"
+    while pos < len(line):
+        match = node_pattern.search(line, pos)
+        if not match:
+            result.append(line[pos:])
+            break
 
-    lines = code.splitlines()
-    fixed = []
-    if not lines:
-        return code
+        result.append(line[pos : match.start()])
+        node_id = match.group(1)
+        matched_open = match.group(2)
 
-    # Skip the first line (diagram type declaration)
-    fixed.append(lines[0])
-    for line in lines[1:]:
-        if line.strip().startswith("%%"):
-            fixed.append(line)
-            continue
-        fixed.append(reserved_pattern.sub(_replace, line))
-    return "\n".join(fixed)
-
-
-def _fix_node_ids_with_spaces(code: str) -> str:
-    """
-    Remove spaces/hyphens inside bare node IDs by camel-casing them.
-    e.g.  My Node[...] -> MyNode[...]
-          my-node[...] -> myNode[...]
-    Only applies to flowchart/graph diagrams.
-    """
-
-    def _camel(m: re.Match) -> str:
-        parts = re.split(r"[\s\-]+", m.group(1))
-        camel = parts[0] + "".join(p.capitalize() for p in parts[1:])
-        return f"{camel}{m.group(2)}"
-
-    bad_id_pattern = re.compile(
-        r"\b([A-Za-z0-9_]+(?:[\s\-][A-Za-z0-9_]+)+)(\s*[\[\({>])"
-    )
-    lines = code.splitlines()
-    if not lines:
-        return code
-
-    fixed = [lines[0]]
-    for line in lines[1:]:
-        fixed.append(bad_id_pattern.sub(_camel, line))
-    return "\n".join(fixed)
-
-
-def _autofix_mermaid_block(code: str) -> str:
-    """
-    Apply all deterministic fixes to a single Mermaid block (without the
-    surrounding ``` fences).  Order matters: fix IDs before labels.
-    """
-    lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
-    if not lines:
-        return code
-
-    first_token = lines[0].split()[0].lower().rstrip(":")
-    is_graph = first_token in {"graph", "flowchart"}
-
-    fixed = code
-
-    # Fix 1: reserved word node IDs
-    fixed = _fix_reserved_node_ids(fixed)
-
-    # Fix 2: node IDs with spaces/hyphens (graph/flowchart only)
-    if is_graph:
-        fixed = _fix_node_ids_with_spaces(fixed)
-
-    # Fix 3: unquoted multi-word labels (graph/flowchart only)
-    if is_graph:
-        fixed = _fix_unquoted_labels(fixed)
-
-    return fixed
-
-
-def _apply_fixes_to_content(content: str) -> tuple[str, int]:
-    """
-    Find every Mermaid block in *content*, validate it, and — if it has
-    errors — auto-fix it in-place.
-
-    Returns ``(patched_content, num_fixed)`` where *num_fixed* is the number
-    of blocks that were modified.
-    """
-    blocks = _extract_mermaid_blocks(content)
-    if not blocks:
-        return content, 0
-
-    num_fixed = 0
-    # Iterate in reverse so that index offsets stay valid after replacement
-    for start, end, block_code in reversed(blocks):
-        errors = _validate_mermaid_block(block_code)
-        if not errors:
+        spec = next((s for s in specs if s[0] == matched_open), None)
+        if not spec:
+            result.append(line[match.start() : match.end()])
+            pos = match.end()
             continue
 
-        fixed_code = _autofix_mermaid_block(block_code)
-        new_fence = f"```mermaid\n{fixed_code}\n```"
-        content = content[:start] + new_fence + content[end:]
-        num_fixed += 1
+        open_delim, close_delim, wrap_prefix, wrap_suffix = spec
+        start_content = match.end()
 
-    return content, num_fixed
+        close_idx = _find_shape_close(line, start_content, open_delim, close_delim)
+        if close_idx != -1:
+            raw_content = line[start_content:close_idx].strip()
+            if raw_content.startswith('"') and raw_content.endswith('"') and len(raw_content) >= 2:
+                inner = raw_content[1:-1]
+                if '"' in inner:
+                    clean_inner = inner.replace('"', "'")
+                    result.append(f"{node_id}{open_delim}\"{clean_inner}\"{close_delim}")
+                else:
+                    result.append(f"{node_id}{open_delim}{raw_content}{close_delim}")
+            else:
+                clean_content = raw_content.replace('"', "'")
+                result.append(f"{node_id}{wrap_prefix}{clean_content}{wrap_suffix}")
+            pos = close_idx + len(close_delim)
+        else:
+            result.append(line[match.start() : match.end()])
+            pos = match.end()
+
+    return "".join(result)
+
+
+def _repair_pass_1(code: str) -> str:
+    """Pass 1: Header, delimiter, and label quote normalization."""
+    code = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", code)
+    code = re.sub(r"^```(?:mermaid|MERMAID|Mermaid)?\s*$", "", code, flags=re.MULTILINE | re.IGNORECASE)
+    code = re.sub(r"^```\s*$", "", code, flags=re.MULTILINE)
+
+    lines = [line.rstrip() for line in code.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    if not lines:
+        return "flowchart TD\n    Start([Start]) --> End([End])"
+
+    header_idx = -1
+    in_frontmatter = False
+    for i, line in enumerate(lines):
+        line_clean = line.strip()
+        if line_clean == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter or line_clean.startswith("%%") or not line_clean:
+            continue
+        header_idx = i
+        break
+
+    if header_idx != -1:
+        raw_header = lines[header_idx].strip()
+        raw_header_lower = raw_header.lower()
+
+        is_valid_header = any(re.match(p, raw_header_lower, re.IGNORECASE) for p in VALID_HEADER_PATTERNS)
+        if not is_valid_header:
+            if raw_header_lower in HEADER_CORRECTIONS:
+                lines[header_idx] = HEADER_CORRECTIONS[raw_header_lower]
+            else:
+                first_tok = raw_header_lower.split()[0] if raw_header_lower.split() else ""
+                if first_tok in HEADER_CORRECTIONS:
+                    rest = raw_header[len(first_tok):].strip()
+                    lines[header_idx] = f"{HEADER_CORRECTIONS[first_tok]} {rest}".strip()
+                elif not any(re.match(p, raw_header_lower, re.IGNORECASE) for p in VALID_HEADER_PATTERNS):
+                    lines.insert(header_idx, "flowchart TD")
+    else:
+        lines.insert(0, "flowchart TD")
+
+    repaired_lines = [_fix_unquoted_labels_on_line(line) for line in lines]
+    return "\n".join(repaired_lines)
+
+
+def _repair_pass_2(code: str) -> str:
+    """Pass 2: Identifier, connector, and reserved keyword sanitization."""
+    lines = code.splitlines()
+    repaired: list[str] = []
+
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean or line_clean.startswith("%%") or line_clean.startswith("---"):
+            repaired.append(line)
+            continue
+
+        # Subgraph declaration normalization
+        subgraph_match = re.match(r"^subgraph\s+([^\s\[\]]+(?:\s+[^\s\[\]]+)+)\s*$", line_clean, re.IGNORECASE)
+        if subgraph_match and not ("[" in line_clean and "]" in line_clean):
+            title = subgraph_match.group(1).strip()
+            node_id = re.sub(r"[^\w]", "_", title).strip("_")
+            repaired.append(f'    subgraph {node_id} ["{title}"]')
+            continue
+
+        segments = _split_by_quotes(line)
+        new_segments: list[str] = []
+
+        for seg_text, is_quoted in segments:
+            if is_quoted:
+                new_segments.append(seg_text)
+                continue
+
+            seg = seg_text
+            # 1. Single dash arrows
+            seg = re.sub(r"(?<![\-\.\=\>\<])\s*->\s*(?![\-\.\=\>\<])", " --> ", seg)
+            # 1.5 Normalize spacing around valid arrows
+            seg = re.sub(r"(?<!\s)(-->|---|==>|-\.->)", r" \1", seg)
+            seg = re.sub(r"(-->|---|==>|-\.->)(?![\|\s])", r"\1 ", seg)
+            # 2. 'A -- label --> B' -> 'A -->|label| B'
+            seg = re.sub(r"\s+--\s*([^\|\-\>\n][^\-\>\n]*?)\s*-->\s*", r" -->|\1| ", seg)
+            seg = re.sub(r"\s+--\s*([^\|\-\n][^\-\n]*?)\s*--\s*", r" ---|\1| ", seg)
+            seg = re.sub(r"\s+--\s*([a-zA-Z0-9_\s]{2,})\s+(\w+)\b", r" -->|\1| \2", seg)
+            # 3. Unclosed link pipes
+            seg = re.sub(r"(-->|---|==>|-\.->)\|([^\|\n]+?)\s+([A-Za-z0-9_]+)\b", r"\1|\2| \3", seg)
+
+            # 4. Reserved keyword node IDs
+            if line_clean.lower() != "end":
+                for res_word in RESERVED_NODE_WORDS:
+                    seg = re.sub(rf"\b({res_word})\s*([\[\(\{{\>])", rf"node_\1\2", seg, flags=re.IGNORECASE)
+                    seg = re.sub(rf"\b({res_word})\s*(-->|---|==>|-\.->)", rf"node_\1 \2", seg, flags=re.IGNORECASE)
+                    seg = re.sub(rf"(-->|---|==>|-\.->)\s*\b({res_word})\b(?!\s*[\w\[\(\{{\>])", rf"\1 node_\2", seg, flags=re.IGNORECASE)
+
+            # 5. Hyphenated node IDs outside quotes
+            seg = re.sub(r"\b([a-zA-Z0-9_]+)-([a-zA-Z0-9_]+)\s*([\[\(\{{\>])", r"\1_\2\3", seg)
+            seg = re.sub(r"\b([a-zA-Z0-9_]+)-([a-zA-Z0-9_]+)\s+(-->|---|==>|-\.->)", r"\1_\2 \3", seg)
+            seg = re.sub(r"(-->|---|==>|-\.->)\s+([a-zA-Z0-9_]+)-([a-zA-Z0-9_]+)\b", r"\1 \2_\3", seg)
+
+            new_segments.append(seg)
+
+        repaired.append("".join(new_segments))
+
+    return "\n".join(repaired)
+
+
+def _repair_pass_3(code: str) -> str:
+    """Pass 3: Subgraph balancing and sequence block closure."""
+    lines = code.splitlines()
+    repaired_lines: list[str] = []
+
+    subgraph_depth = 0
+    seq_depth = 0
+    is_seq = False
+
+    for line in lines:
+        line_clean = line.strip()
+        if not line_clean:
+            repaired_lines.append("")
+            continue
+
+        if "sequencediagram" in line_clean.lower():
+            is_seq = True
+
+        if line_clean.startswith("%%") or line_clean.startswith("---"):
+            repaired_lines.append(line)
+            continue
+
+        if (
+            line_clean.startswith(("- ", "* ", "1. ", "2. ", "3. ", "Note: ", "Here is ", "Explanation:"))
+            and not is_seq
+            and "-->" not in line_clean
+            and "[" not in line_clean
+        ):
+            repaired_lines.append(f"    %% {line_clean}")
+            continue
+
+        if re.match(r"^subgraph\b", line_clean, re.IGNORECASE):
+            subgraph_depth += 1
+            repaired_lines.append(line)
+            continue
+        elif line_clean.lower() == "end" or re.match(r"^end\b", line_clean, re.IGNORECASE):
+            if is_seq and seq_depth > 0:
+                seq_depth -= 1
+                repaired_lines.append("    end")
+            elif subgraph_depth > 0:
+                subgraph_depth -= 1
+                repaired_lines.append("    end")
+            continue
+
+        if is_seq and re.match(r"^(loop|alt|opt|par|critical|rect)\b", line_clean, re.IGNORECASE):
+            seq_depth += 1
+            repaired_lines.append(line)
+            continue
+
+        repaired_lines.append(line)
+
+    while subgraph_depth > 0:
+        repaired_lines.append("    end")
+        subgraph_depth -= 1
+
+    while seq_depth > 0:
+        repaired_lines.append("    end")
+        seq_depth -= 1
+
+    final_code = "\n".join(repaired_lines)
+    if not any(re.match(p, final_code.lower().strip(), re.IGNORECASE) for p in VALID_HEADER_PATTERNS):
+        final_code = "flowchart TD\n" + final_code
+
+    return final_code
 
 
 # ---------------------------------------------------------------------------
-# Middleware class
+# 2. Auto-Correction Using LLM
 # ---------------------------------------------------------------------------
-class MermaidValidationMiddleware(AgentMiddleware):
+
+_LLM_CORRECTION_PROMPT = """You are a specialized Mermaid diagram syntax fixer.
+Fix the following malformed Mermaid diagram so that it is 100% syntactically valid and renders cleanly.
+
+Detected Syntax Errors:
+{errors}
+
+Original Diagram:
+```mermaid
+{code}
+```
+
+STRICT RULES:
+1. Fix all syntax errors, unbalanced brackets, broken arrows, and invalid headers.
+2. Every node label text must be enclosed in double quotes: e.g. Node1["Title (with details)"] or DB[("Database")].
+3. Node IDs must be alphanumeric and underscores only ([a-zA-Z0-9_]+). No reserved keywords (end, subgraph, graph, click) as standalone IDs.
+4. Every subgraph must have a matching 'end'.
+5. Ensure spaces exist around all arrows (e.g. 'A --> B' instead of 'A-->B').
+6. Output ONLY the raw Mermaid diagram syntax. Do NOT wrap in ```mermaid markdown fences. Do NOT add any explanations or notes.
+"""
+
+
+def _get_fixer_llm(llm: Optional[Any] = None) -> Any:
+    """Returns a deterministic LLM instance for Mermaid auto-correction."""
+    if llm is not None:
+        return llm
+    try:
+        from setup.init_config import cypher_LLM
+        return cypher_LLM()
+    except Exception:
+        try:
+            from langchain_ollama import ChatOllama
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://local-ai:11434")
+            return ChatOllama(
+                model="qwen3.5:4b",
+                base_url=ollama_url,
+                temperature=0.0,
+                reasoning=False,
+                num_predict=1024,
+                tags=["mermaid_fixer"],
+            )
+        except Exception as e:
+            logger.warning(f"Could not initialize default ChatOllama for Mermaid fixer: {e}")
+            return None
+
+
+def _llm_fix_mermaid(code: str, errors: list[str], llm: Optional[Any] = None) -> str:
+    """Invokes LLM to auto-correct malformed Mermaid diagram."""
+    fixer_llm = _get_fixer_llm(llm)
+    if fixer_llm is None:
+        return code
+
+    error_bullet_list = "\n".join(f"- {err}" for err in errors)
+    prompt_text = _LLM_CORRECTION_PROMPT.format(errors=error_bullet_list, code=code.strip())
+
+    try:
+        response = fixer_llm.invoke([
+            SystemMessage(content="You are an expert Mermaid diagram syntax repair engine. Output ONLY valid Mermaid syntax."),
+            HumanMessage(content=prompt_text),
+        ])
+        content = response.content if hasattr(response, "content") else str(response)
+
+        # Extract content from fences if LLM wrapped it
+        if "```" in content:
+            match = _FENCE_REGEX.search(content)
+            if match:
+                content = match.group(1)
+            else:
+                content = re.sub(r"^```(?:mermaid|MERMAID)?\s*$", "", content, flags=re.MULTILINE)
+                content = re.sub(r"^```\s*$", "", content, flags=re.MULTILINE)
+
+        cleaned = content.strip()
+        logger.info("LLM auto-correction generated candidate Mermaid syntax.")
+        return cleaned if cleaned else code
+    except Exception as exc:
+        logger.warning(f"LLM Mermaid auto-correction call failed: {exc}")
+        return code
+
+
+# ---------------------------------------------------------------------------
+# 3. Retry Logic with Configurable Attempts
+# ---------------------------------------------------------------------------
+
+def repair_mermaid(
+    code: str,
+    max_retries: int = 3,
+    use_llm: bool = True,
+    llm: Optional[Any] = None,
+) -> tuple[str, bool, list[str]]:
     """
-    Validates Mermaid diagram syntax in every AI response and **directly
-    patches** the AI message content with auto-corrected diagrams.
+    Progressively validates and repairs a Mermaid diagram block across up to `max_retries` attempts.
+    Combines multi-pass rule repairs with LLM auto-correction on persistent syntax failures.
 
-    No secondary model call is made — the LLM is invoked exactly once per
-    user question regardless of diagram quality.
+    Parameters:
+        code (str): Raw Mermaid diagram string.
+        max_retries (int): Maximum repair attempt passes (default: 3).
+        use_llm (bool): Whether to invoke LLM auto-correction if rule-based passes fail.
+        llm (Optional[Any]): Optional LLM instance for auto-correction.
 
-    Parameters
-    ----------
-    (none -kept signature compatible with the previous class)
+    Returns:
+        tuple[str, bool, list[str]]: (repaired_code, was_modified, list_of_fixes_applied)
+    """
+    clean_code = code.strip()
+    if not clean_code:
+        return "flowchart TD\n    Start([Start]) --> End([End])", True, ["Initialized empty diagram"]
+
+    log: list[str] = []
+    current_code = clean_code
+    was_modified = False
+
+    initial_errors = find_mermaid_errors(current_code)
+    if not initial_errors:
+        return current_code, False, []
+
+    log.append(f"Initial errors ({len(initial_errors)}): {initial_errors[0]}")
+
+    for attempt in range(1, max_retries + 1):
+        prev_code = current_code
+
+        # Attempt 1: Headers & Label Quotes
+        if attempt == 1:
+            current_code = _repair_pass_1(current_code)
+            log.append(f"Attempt 1/{max_retries}: Normalized headers and shape label quotes.")
+
+        # Attempt 2: Node IDs & Connectors
+        elif attempt == 2:
+            current_code = _repair_pass_2(current_code)
+            log.append(f"Attempt 2/{max_retries}: Sanitized node identifiers, arrows, and reserved words.")
+
+        # Attempt 3+: Subgraphs & LLM Auto-Correction Pass
+        elif attempt >= 3:
+            current_code = _repair_pass_3(current_code)
+            log.append(f"Attempt {attempt}/{max_retries}: Balanced subgraphs and sequence blocks.")
+
+            # If still invalid, trigger LLM auto-correction
+            remaining_before_llm = find_mermaid_errors(current_code)
+            if remaining_before_llm and use_llm:
+                log.append(f"Attempt {attempt}/{max_retries}: Triggering LLM auto-correction pass...")
+                llm_fixed = _llm_fix_mermaid(current_code, remaining_before_llm, llm=llm)
+                # Run pass 1 & 2 on LLM output to ensure clean formatting
+                llm_fixed = _repair_pass_1(llm_fixed)
+                llm_fixed = _repair_pass_2(llm_fixed)
+                if not find_mermaid_errors(llm_fixed) or len(find_mermaid_errors(llm_fixed)) < len(remaining_before_llm):
+                    current_code = llm_fixed
+                    log.append(f"Attempt {attempt}/{max_retries}: LLM auto-correction improved syntax.")
+
+        if current_code != prev_code:
+            was_modified = True
+
+        remaining_errors = find_mermaid_errors(current_code)
+        if not remaining_errors:
+            log.append(f"Validation succeeded after Attempt {attempt}/{max_retries}.")
+            return current_code, was_modified, log
+
+        log.append(f"Attempt {attempt}/{max_retries} finished with remaining issue: {remaining_errors[0]}")
+
+    return current_code, was_modified, log
+
+
+# ---------------------------------------------------------------------------
+# Content Processing & Mermaid Block Replacement
+# ---------------------------------------------------------------------------
+
+def extract_mermaid_blocks(content: str) -> list[tuple[str, int, int]]:
+    """Extracts all Mermaid diagram blocks from a text string."""
+    blocks: list[tuple[str, int, int]] = []
+    for match in _FENCE_REGEX.finditer(content):
+        blocks.append((match.group(1), match.start(), match.end()))
+    return blocks
+
+
+def _apply_fixes_to_content(
+    content: str,
+    max_retries: int = 3,
+    use_llm: bool = True,
+    llm: Optional[Any] = None,
+) -> tuple[str, bool]:
+    """Scans content for ```mermaid ... ``` blocks, validates syntax, and auto-corrects them."""
+    if not content or "```" not in content:
+        return content, False
+
+    any_modified = False
+
+    def _replace_block(match: re.Match) -> str:
+        nonlocal any_modified
+        raw_diagram = match.group(1)
+        repaired, modified, _ = repair_mermaid(raw_diagram, max_retries=max_retries, use_llm=use_llm, llm=llm)
+        if modified:
+            any_modified = True
+        return f"```mermaid\n{repaired}\n```"
+
+    result = _FENCE_REGEX.sub(_replace_block, content)
+
+    unclosed_match = _UNCLOSED_FENCE_REGEX.search(result)
+    if unclosed_match and not result.rstrip().endswith("```"):
+        raw_diagram = unclosed_match.group(1)
+        repaired, _, _ = repair_mermaid(raw_diagram, max_retries=max_retries, use_llm=use_llm, llm=llm)
+        result = _UNCLOSED_FENCE_REGEX.sub(f"```mermaid\n{repaired}\n```", result)
+        any_modified = True
+
+    return result, any_modified
+
+
+# ---------------------------------------------------------------------------
+# LangChain Agent Middleware Class
+# ---------------------------------------------------------------------------
+
+class MermaidValidationMiddleware(AgentMiddleware[Any, Any, Any]):
+    """
+    AgentMiddleware that intercepts model responses, validates Mermaid syntax before
+    rendering, applies LLM auto-correction when needed, and executes configurable retry attempts.
     """
 
-    # ------------------------------------------------------------------
-    # Hook – runs after the model produces a response
-    # ------------------------------------------------------------------
+    name: str = "MermaidValidation"
 
-    def after_model(
-        self, state: AgentState, runtime: Any
-    ) -> dict[str, Any] | None:
-        """
-        Inspect the latest AI message for Mermaid blocks.
+    def __init__(
+        self,
+        max_retries: int = 3,
+        use_llm: bool = True,
+        llm: Optional[Any] = None,
+    ) -> None:
+        super().__init__()
+        self.max_retries = max_retries
+        self.use_llm = use_llm
+        self.llm = llm
 
-        If any block contains syntax errors, attempt to auto-fix them and
-        replace the message content in-place.  Never jumps back to the model.
-        """
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any] | AIMessage:
+        response = handler(request)
+        return self._process_model_response(response)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Any],
+    ) -> ModelResponse[Any] | AIMessage:
+        response = await handler(request)
+        return self._process_model_response(response)
+
+    def _process_model_response(self, response: Any) -> Any:
+        if isinstance(response, ModelResponse):
+            for msg in response.result:
+                self._sanitize_message_content(msg)
+            return response
+        elif isinstance(response, AIMessage):
+            self._sanitize_message_content(response)
+            return response
+        return response
+
+    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        return self._process_state(state)
+
+    async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        return self._process_state(state)
+
+    def after_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        return self._process_state(state)
+
+    async def aafter_agent(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        return self._process_state(state)
+
+    def _sanitize_message_content(self, msg: BaseMessage) -> bool:
+        if not hasattr(msg, "content"):
+            return False
+
+        content = msg.content
+        if isinstance(content, str) and "```" in content:
+            fixed_content, modified = _apply_fixes_to_content(
+                content, max_retries=self.max_retries, use_llm=self.use_llm, llm=self.llm
+            )
+            if modified:
+                msg.content = fixed_content
+                return True
+        elif isinstance(content, list):
+            modified_any = False
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    part_text = part.get("text", "")
+                    if "```" in part_text:
+                        fixed_text, mod = _apply_fixes_to_content(
+                            part_text, max_retries=self.max_retries, use_llm=self.use_llm, llm=self.llm
+                        )
+                        if mod:
+                            part["text"] = fixed_text
+                            modified_any = True
+            return modified_any
+
+        return False
+
+    def _process_state(self, state: Any) -> dict[str, Any] | None:
+        if not isinstance(state, dict):
+            return None
+
         messages = state.get("messages", [])
         if not messages:
             return None
 
-        # The latest message should be the AI response
-        latest = messages[-1]
-        content: str = (
-            latest.content
-            if hasattr(latest, "content") and isinstance(latest.content, str)
-            else ""
-        )
+        state_modified = False
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) or getattr(msg, "type", "") == "ai":
+                if self._sanitize_message_content(msg):
+                    state_modified = True
+                break
 
-        if not content:
-            return None
-
-        # Quick check: does it even contain a Mermaid block?
-        if "```mermaid" not in content.lower():
-            return None
-
-        patched_content, num_fixed = _apply_fixes_to_content(content)
-
-        if num_fixed == 0:
-            logger.info("MermaidValidationMiddleware: all Mermaid blocks are valid.")
-            return None
-
-        logger.info(
-            "MermaidValidationMiddleware: auto-fixed %d Mermaid block(s) in-place.",
-            num_fixed,
-        )
-
-        # Build a patched copy of the latest message preserving all metadata
-        patched_message = AIMessage(
-            content=patched_content,
-            additional_kwargs=getattr(latest, "additional_kwargs", {}),
-            response_metadata=getattr(latest, "response_metadata", {}),
-            id=getattr(latest, "id", None),
-        )
-
-        # Return updated messages list with the patched final message
-        return {
-            "messages": messages[:-1] + [patched_message],
-        }
+        if state_modified:
+            logger.info("MermaidValidationMiddleware auto-corrected diagrams in agent state")
+            return {"messages": messages}
+        return None

@@ -81,8 +81,6 @@ services:
       - STACKEXCHANGE_API_KEY=${STACKEXCHANGE_API_KEY}
       - HF_HUB_OFFLINE=1
       - HF_HOME=/home/appuser/.cache/huggingface
-    volumes:
-      - ~/.cache/huggingface:/home/appuser/.cache/huggingface:rw
     networks:
       - lolly-rag
     logging:

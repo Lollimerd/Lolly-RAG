@@ -32,3 +32,4 @@ httpx
 httpx-sse
 requests
 pandas
+mermaid-py

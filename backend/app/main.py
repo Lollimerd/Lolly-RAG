@@ -45,6 +45,7 @@ from utils.dashboard import (
 )
 
 from agents.agent import stackexchange_agent
+from middleware.mermaid import _apply_fixes_to_content, validate_mermaid
 from utils.utils import (
     find_container_by_port,
     reset_tool_call_count,
@@ -775,6 +776,13 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
             full_response = "".join(response_chunks)
             full_thought = "".join(response_thought_chunks)
             if full_response:
+                # Apply Mermaid syntax auto-fixes before persisting so history is always valid
+                full_response, _ = _apply_fixes_to_content(full_response)
+                if full_thought:
+                    full_thought, _ = _apply_fixes_to_content(full_thought)
+
+                yield _sse({"type": "final_response", "content": full_response, "reasoning_content": full_thought})
+
                 await asyncio.to_thread(
                     add_ai_message_to_session,
                     request.session_id,
