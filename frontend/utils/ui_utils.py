@@ -1,12 +1,8 @@
 import html
 import streamlit as st
-import streamlit.components.v1 as components
-
 import json
 import logging
 import os
-import re
-import uuid
 import requests
 from typing import List
 from datetime import datetime
@@ -17,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 # --- API Configuration ---
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+CONFIG_URL = f"{BACKEND_URL}/config"
 CHATS_URL = f"{BACKEND_URL}/user"
 CHAT_HISTORY_URL = f"{BACKEND_URL}/chat"
 USERS_URL = f"{BACKEND_URL}/users"
@@ -145,13 +142,11 @@ def extract_title_and_question(input_string):
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
-
 # This is a placeholder for LangChain's Document class
 class Document:
     def __init__(self, page_content: str, metadata: dict):
         self.page_content = page_content
         self.metadata = metadata
-
 
 def format_docs_with_metadata(docs: List[Document]) -> str:
     """
@@ -173,31 +168,19 @@ def format_docs_with_metadata(docs: List[Document]) -> str:
         formatted_blocks
     )
 
-
-# --- Mermaid Rendering & Repair (Re-exported from mermaid_utils) ---
-from utils.mermaid_utils import (
-    render_message_with_mermaid,
-    repair_mermaid_content,
-    autofix_mermaid_code,
-)
-
-
-CONFIG_URL = f"{BACKEND_URL}/config"  # New API endpoint
-
-
 # --- 🆕 Function to fetch and display container name ---
 def display_container_name():
     """Fetches and displays the Neo4j container name in the sidebar."""
     try:
         with st.sidebar:
-            with st.spinner("Connecting to DB..."):
-                response = requests.get(CONFIG_URL)
+            with st.spinner("Connecting to database..."):
+                response = requests.get(CONFIG_URL, timeout=4)
                 response.raise_for_status()
                 data = response.json()
                 container_name = data.get("container_name", "N/A")
-                st.success(f"DB Connected: **{container_name}**", icon="🐳")
+                st.success(f"DB: **{container_name}**", icon=":material/database:")
     except requests.exceptions.RequestException:
-        st.sidebar.error("**DB Status:** Connection failed.")
+        st.sidebar.error("Database connection offline", icon=":material/error:")
 
 
 # --- Config Func ---

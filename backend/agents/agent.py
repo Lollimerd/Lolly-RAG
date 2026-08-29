@@ -1,8 +1,7 @@
 from deepagents import create_deep_agent
 from setup.init_config import answer_LLM
 from tools.document_search import document_search_tool
-from middleware.in_built import clear_tool_uses, summarize
-from middleware.mermaid import MermaidValidationMiddleware
+from middleware.in_built import clear_tool_uses, summarize, tool_limit, tool_retry
 
 import logging
 
@@ -41,19 +40,25 @@ system_prompt = """
   | Value 1  | Detail 1 |
 
 ### C. Diagrams (Mermaid)
-- **When**: Use for workflows, architectures, sequences, or data flows.
-- **Strict Syntax Rules**:
-  1. Always declare a valid diagram type on the first line (e.g., `flowchart TD` or `sequenceDiagram`).
-  2. Every `subgraph` MUST have a matching `end` statement.
-  3. Node IDs must be **alphanumeric only** with no spaces (e.g., `Node1`, `DB_Main`).
-  4. Descriptive text inside labels **must** be wrapped in double quotes (e.g., `Node1["User Request"]`).
-  5. All connection arrows must connect two valid nodes. Never leave dangling arrows (e.g., `A -->`).
-  6. **NO** conversational text or markdown comments inside the ```mermaid code block.
+- **When**: Use for workflows, architectures, data flows, entity relationships, or execution sequences whenever visual representation aids comprehension.
+- **Strict Streamlit / Mermaid Syntax Rules**:
+  1. **Block Delimiters**: Always open with ` ```mermaid ` on its own line and close with ` ``` ` on its own line.
+  2. **Valid Diagram Header**: The first line inside the code block MUST declare a valid diagram type (e.g., `flowchart TD`, `flowchart LR`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, `mindmap`).
+  3. **Node IDs**: Use alphanumeric characters and underscores ONLY (e.g., `Node_1`, `DB_Main`, `APIGateway`). NEVER use spaces, hyphens, punctuation, or reserved keywords (`end`, `subgraph`, `graph`, `style`, `class`, `default`) as node IDs.
+  4. **Strict Quoting on Node Labels**: All descriptive text inside shapes MUST be wrapped in double quotes (e.g., `Node1["User Query (HTTP)"]`, `DB[("Neo4j Graph DB")]`, `Decision{"Check Condition?"}`).
+  5. **Subgraphs**: Every `subgraph` MUST have an explicit alphanumeric ID, a double-quoted title, and a matching `end` statement (e.g., `subgraph Storage ["Persistent Storage"] ... end`).
+  6. **Arrows & Connection Labels**: Both ends of every connection MUST connect to valid declared nodes. Never leave dangling arrows (`A -->`). For labeled arrows, use `A -->|Label Text| B` or `A -- "Label Text" --> B`.
+  7. **Clean Syntax**: Absolutely NO conversational prose, markdown comments, or HTML tags inside the ```mermaid block.
 - **Example**:
   ```mermaid
   flowchart TD
-    subgraph Backend["Backend Services"]
-      API["API Gateway"] --> DB[("Database")]
+    subgraph Client ["Frontend Layer (Streamlit)"]
+      UI["Web UI Interface"] --> API["FastAPI Gateway"]
+    end
+    subgraph Backend ["Core Intelligence"]
+      API --> Agent["RAG Agent"]
+      Agent --> Tool["Document Search Tool"]
+      Tool --> DB[("Neo4j Vector & Graph DB")]
     end
   ```
 """
@@ -66,9 +71,10 @@ try:
         debug=False,
         name="LollyRAGAgent",
         middleware=[
-            MermaidValidationMiddleware(),
             clear_tool_uses,
-            summarize
+            summarize,
+            tool_retry,
+            tool_limit,
         ],
     )
 

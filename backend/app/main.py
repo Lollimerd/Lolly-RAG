@@ -8,7 +8,6 @@ import uvicorn
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List
 from urllib.parse import urlparse
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, APIRouter, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,7 +44,7 @@ from utils.dashboard import (
 )
 
 from agents.agent import rag_agent
-from middleware.mermaid import _apply_fixes_to_content
+
 from utils.utils import (
     find_container_by_port,
     reset_tool_call_count,
@@ -59,6 +58,7 @@ from utils.memory import (
     get_user_sessions,
     link_session_to_user,
     repair_missing_has_message_relationships,
+    update_last_ai_message,
 )
 
 # Load environment variables
@@ -79,9 +79,8 @@ middleware = [
     )
 ]
 
-
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     # Initialize constraints on startup manually handling graph driver setup
     try:
         graph = get_graph_instance()
@@ -260,7 +259,6 @@ def repair_sessions():
             detail=f"Failed to repair sessions: {str(e)}"
         )
 
-
 @users_router.delete("/user/{user_id}")
 def delete_app_user(user_id: str):
     """Deletes a user and all their data."""
@@ -271,14 +269,9 @@ def delete_app_user(user_id: str):
         logger.error(f"Error deleting user {user_id}: {e}")
         return {"status": "error", "message": str(e)}
 
-
-
-
-
 # ===========================================================================================================================================================
 # Unstructured Document Ingestion Endpoints
 # ===========================================================================================================================================================
-
 
 class DocumentUploadResponse(BaseModel):
     status: str
@@ -571,8 +564,6 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
             full_response = "".join(response_chunks)
             full_thought = "".join(response_thought_chunks)
             if full_response:
-                # Apply mermaid auto-fix before saving to DB
-                full_response, _ = _apply_fixes_to_content(full_response)
                 await asyncio.to_thread(
                     add_ai_message_to_session,
                     request.session_id,
@@ -597,11 +588,9 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
         },
     )
 
-
 # ===========================================================================================================================================================
 # Analytical & Visualization Endpoints
 # ===========================================================================================================================================================
-
 
 @stats_router.get("/summary")
 def api_get_database_summary():

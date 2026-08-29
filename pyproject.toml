@@ -30,6 +30,7 @@ dependencies = [
     "sentence-transformers>=6.0.0",
     "st-pages>=1.0.1",
     "streamlit>=1.62.0",
+    "streamlit-markdown>=1.1.0",
     "streamlit-timeline>=0.0.2",
     "torch>=2.13.0",
     "uvicorn[standard]>=0.52.4",

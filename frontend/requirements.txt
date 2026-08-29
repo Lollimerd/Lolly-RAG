@@ -1,6 +1,7 @@
 # Frontend & UI
 streamlit
 streamlit_timeline
+streamlit-markdown
 st_pages
 plotly
 pyvis

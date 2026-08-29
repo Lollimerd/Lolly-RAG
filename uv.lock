@@ -1414,6 +1414,7 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "st-pages" },
     { name = "streamlit" },
+    { name = "streamlit-markdown" },
     { name = "streamlit-timeline" },
     { name = "torch" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1446,6 +1447,7 @@ requires-dist = [
     { name = "sentence-transformers", specifier = ">=6.0.0" },
     { name = "st-pages", specifier = ">=1.0.1" },
     { name = "streamlit", specifier = ">=1.62.0" },
+    { name = "streamlit-markdown", specifier = ">=1.1.0" },
     { name = "streamlit-timeline", specifier = ">=0.0.2" },
     { name = "torch", specifier = ">=2.13.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
@@ -3023,6 +3025,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/50/94/928c44a8b7bcd602fc4a16025e9868bcdb88b92bcdb2e53dec188d034fc4/streamlit-1.62.0.tar.gz", hash = "sha256:9d2571da6e6799cbaf0f59548f5773926260a87a69807cf3e2f0f68f9f5e4d45", size = 9883501, upload-time = "2026-08-19T18:31:22.864Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/57/78864764c53885db8a378cc1c47329b4b6e095f7ebd89cd1ffcca4027c89/streamlit-1.62.0-py3-none-any.whl", hash = "sha256:294dbcfe0d6531b0d8593a095e6872dcc6ec4b731723fbb318a0f8102e69162e", size = 10490146, upload-time = "2026-08-19T18:31:19.957Z" },
+]
+
+[[package]]
+name = "streamlit-markdown"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/18/dbf98b6e07a8b164a354fab278b58a31167ef99a26dedf13ad5d047dab91/streamlit_markdown-1.1.0.tar.gz", hash = "sha256:c73b2b27ab00ca4109ddc1d4f60905be69b6e2a94c31557f072727588409ee11", size = 3974301, upload-time = "2025-02-16T17:46:43.536Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/c4/5ee06b15a8c8a113d0e2014674c292caa4e217f83b9aff07f59be431f107/streamlit_markdown-1.1.0-py3-none-any.whl", hash = "sha256:6f382c1d9e6da0c74e3d45044927434f13c9eaf816234c16e0d89c87586b09f8", size = 2338446, upload-time = "2025-02-16T17:46:40.013Z" },
 ]
 
 [[package]]

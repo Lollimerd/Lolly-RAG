@@ -343,3 +343,21 @@ def delete_user(user_id: str):
         logger.info(f"User {user_id} and all their data deleted")
     except Exception as e:
         logger.error(f"Error deleting user {user_id}: {e}")
+
+
+def update_last_ai_message(session_id: str, new_content: str):
+    """
+    Updates the content of the latest assistant message in a session.
+    """
+    try:
+        graph = get_graph_instance()
+        query = """
+        MATCH (s:Session {id: $session_id})-[:LAST_MESSAGE]->(m:Message)
+        SET m.content = $new_content
+        RETURN elementId(m) AS message_id
+        """
+        graph.query(query, params={"session_id": session_id, "new_content": new_content})
+        logger.info(f"Updated last AI message for session {session_id}")
+    except Exception as e:
+        logger.error(f"Error updating last AI message: {e}")
+

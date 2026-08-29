@@ -20,7 +20,7 @@ flowchart TD
         Tools["tools/document_search.py (Document Search Tool)"]
         Memory["utils/memory.py (Neo4j Session & User Memory)"]
         DocProc["utils/doc_processor.py (Doc Chunking & Graph Ingestion)"]
-        Middleware["middleware/mermaid.py (Syntax Validation)"]
+        Middleware["middleware/in_built.py (Tool & Context Middleware)"]
     end
 
     subgraph Infrastructure ["Local AI & Graph Infrastructure"]
@@ -55,7 +55,7 @@ flowchart TD
 | **📥 Multi-Format Document Ingestion** | Ingestion pipeline for PDFs, Word `.docx`, Markdown `.md`, and plain text `.txt` with automatic node creation, chunking, vector embedding generation, and relationship wiring `(Document)-[:HAS_CHUNK]->(DocumentChunk)`. | PDF / DOCX / MD / TXT, `jina-embeddings-v2-base-en` |
 | **📊 Visual Graph Explorer & Analytics** | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit. | PyVis Network Visualizer, Streamlit Analytics |
 | **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`). | Neo4j Graph Sessions, Auto-Healing Graph Routines |
-| **🔮 Robust Middleware Pipeline** | Custom [`MermaidValidationMiddleware`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/mermaid.py) ensures valid syntax for streamed workflow and architectural diagrams. | Streaming Interceptors, Diagram Syntax Validation |
+| **🔮 Robust Middleware Pipeline** | Integrated [`middleware/in_built.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/in_built.py) handling automatic summarization, tool call limits, contextual trimming, and tool retry mechanisms. | Summarization, Context Editing, Tool Call Limits |
 
 ---
 
@@ -69,8 +69,7 @@ lolly-rag/
 │   ├── app/
 │   │   └── main.py               # FastAPI application & REST endpoints
 │   ├── middleware/
-│   │   ├── in_built.py           # Context & tool call middleware
-│   │   └── mermaid.py            # Mermaid diagram validation middleware
+│   │   └── in_built.py           # Context & tool call middleware
 │   ├── setup/
 │   │   └── init_config.py        # Ollama LLM, embedding & Neo4j vector index setups
 │   ├── tools/

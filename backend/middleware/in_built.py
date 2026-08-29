@@ -2,6 +2,8 @@ from langchain.agents.middleware import (
     SummarizationMiddleware,
     ContextEditingMiddleware,
     ClearToolUsesEdit,
+    ToolCallLimitMiddleware,
+    ToolRetryMiddleware,
 )
 from setup.init_config import summarizer
 
@@ -19,3 +21,10 @@ clear_tool_uses = ContextEditingMiddleware(
         ),
     ],
 )
+
+
+# Tool Call Limit Middleware: prevents infinite tool invocation loops (run-level limit)
+tool_limit = ToolCallLimitMiddleware(run_limit=2)
+
+# Tool Retry Middleware: automatically retries transient tool failures with exponential backoff
+tool_retry = ToolRetryMiddleware(max_retries=2, backoff_factor=2.0)

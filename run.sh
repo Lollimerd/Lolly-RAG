@@ -1,8 +1,5 @@
 #!/bin/bash
 
-hf download cross-encoder/ms-marco-MiniLM-L-6-v2
-export HF_HUB_OFFLINE=1
-
 # init venv
 source .venv/bin/activate
 echo "venv activated"
@@ -21,6 +18,10 @@ cleanup() {
 
 # Trap Ctrl+C and other termination signals
 trap cleanup SIGINT SIGTERM
+
+# download reranker model
+# hf download cross-encoder/ms-marco-MiniLM-L-6-v2
+export HF_HUB_OFFLINE=1
 
 cd backend
 # Start FastAPI backend

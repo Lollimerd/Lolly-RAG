@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import SearchType
-from typing import Dict, List
+from typing import Dict, List, Optional
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 
 logger = logging.getLogger(__name__)
@@ -31,9 +31,9 @@ def answer_LLM():
         num_ctx=40968,
         num_predict=8192,  # max tokens in answer
         temperature=0.7,  # balanced creativity
-        repeat_penalty=1.1,  # standard mild penalty (1.5 caused severe gibberish)
+        repeat_penalty=1.1,  # standard mild penalty
         repeat_last_n=64,  # look back 64 tokens (-1 penalized entire 40k context)
-        top_p=0.9,  # nucleus sampling
+        top_p=0.95,  # nucleus sampling
         top_k=40,  # standard candidate pool
         reasoning=True,
         tags=["answer_llm"],
@@ -43,10 +43,23 @@ def answer_LLM():
 def embedding_model():
     """embedding model"""
     return OllamaEmbeddings(
-        model="jina/jina-embeddings-v2-base-en:latest",
+        model="qwen3-embedding:0.6b",
         base_url=OLLAMA_BASE_URL,
-        num_ctx=8192,  # 8k context
+        num_ctx=16384,  # 16k context
     )
+
+@lru_cache(maxsize=1)
+def get_embedding_dimension() -> int:
+    """Dynamically determine the embedding dimension of the configured embedding model."""
+    try:
+        embedder = embedding_model()
+        test_vector = embedder.embed_query("dimension_probe")
+        dim = len(test_vector)
+        logger.info(f"Detected embedding model dimension: {dim}")
+        return dim
+    except Exception as e:
+        logger.warning(f"Could not probe embedding model dimension, defaulting to 1024: {e}")
+        return 1024
 
 @lru_cache(maxsize=1)
 def reranker_model():
@@ -86,12 +99,34 @@ def get_graph_instance() -> Neo4jGraph:
 
 # print(get_graph_instance().schema)
 
-def create_vector_indexes(driver, dimensions: int = 768) -> None:
-    """Creates vector schema indexes for DocumentChunk nodes if they do not exist."""
+def create_vector_indexes(driver, dimensions: Optional[int] = None, recreate_if_dimension_mismatch: bool = True) -> None:
+    """Creates vector schema indexes for DocumentChunk nodes if they do not exist.
+    If an existing index has mismatched dimensions, optionally drops and recreates it.
+    """
+    if dimensions is None:
+        dimensions = get_embedding_dimension()
+
     indexes = [
         ("DocumentChunk_index", "DocumentChunk", "dc"),
     ]
     for index_name, label, var in indexes:
+        if recreate_if_dimension_mismatch:
+            try:
+                check_query = f"SHOW VECTOR INDEXES YIELD name, options WHERE name = '{index_name}'"
+                existing = driver.query(check_query)
+                if existing:
+                    opts = existing[0].get("options", {})
+                    idx_config = opts.get("indexConfig", {}) if isinstance(opts, dict) else {}
+                    existing_dim = idx_config.get("vector.dimensions")
+                    if existing_dim is not None and int(existing_dim) != dimensions:
+                        logger.warning(
+                            f"Vector index {index_name} has dimension {existing_dim}, "
+                            f"recreating with new dimension {dimensions}"
+                        )
+                        driver.query(f"DROP INDEX {index_name} IF EXISTS")
+            except Exception as e:
+                logger.warning(f"Could not verify existing dimension for index {index_name}: {e}")
+
         cypher = f"""
         CREATE VECTOR INDEX {index_name} IF NOT EXISTS
         FOR ({var}:{label})
@@ -154,6 +189,88 @@ def create_text_indexes(driver) -> None:
 # Alias for singular call convention
 create_text_index = create_text_indexes
 
+def embed_missing_nodes(
+    driver=None,
+    batch_size: int = 32,
+    label: str = "DocumentChunk",
+    text_property: str = "content",
+    embedding_property: str = "embedding",
+    expected_dimension: Optional[int] = None,
+) -> int:
+    """Embeds nodes that do not have embeddings or have mismatched embedding dimensions.
+
+    Args:
+        driver: Neo4jGraph connection instance (defaults to get_graph_instance())
+        batch_size: Number of nodes to embed per batch
+        label: Node label (default 'DocumentChunk')
+        text_property: Property containing text to embed (default 'content')
+        embedding_property: Property to store embedding vector (default 'embedding')
+        expected_dimension: Desired embedding dimension (auto-detected if None)
+
+    Returns:
+        int: Total number of nodes updated with new embeddings.
+    """
+    if driver is None:
+        driver = get_graph_instance()
+
+    if expected_dimension is None:
+        expected_dimension = get_embedding_dimension()
+
+    embedder = embedding_model()
+
+    query_unembedded = f"""
+    MATCH (n:`{label}`)
+    WHERE (n.`{embedding_property}` IS NULL OR size(n.`{embedding_property}`) <> $expected_dim)
+      AND n.`{text_property}` IS NOT NULL AND n.`{text_property}` <> ''
+    RETURN elementId(n) AS elem_id, n.id AS id, n.`{text_property}` AS text
+    """
+    try:
+        records = driver.query(query_unembedded, params={"expected_dim": expected_dimension})
+    except Exception as e:
+        logger.error(f"Error querying nodes missing embeddings for {label}: {e}")
+        return 0
+
+    if not records:
+        logger.info(f"All '{label}' nodes already have valid {expected_dimension}-dim embeddings.")
+        return 0
+
+    total_count = len(records)
+    logger.info(f"Found {total_count} '{label}' nodes requiring embeddings (expected dim: {expected_dimension}).")
+
+    updated_count = 0
+    for i in range(0, total_count, batch_size):
+        batch = records[i:i + batch_size]
+        texts = [r["text"] for r in batch]
+
+        try:
+            embeddings = embedder.embed_documents(texts)
+        except Exception as e:
+            logger.error(f"Failed to compute embeddings for batch {i // batch_size + 1}: {e}")
+            continue
+
+        updates = []
+        for rec, emb in zip(batch, embeddings):
+            updates.append({
+                "elem_id": rec["elem_id"],
+                "embedding": emb,
+            })
+
+        update_cypher = f"""
+        UNWIND $updates AS item
+        MATCH (n:`{label}`)
+        WHERE elementId(n) = item.elem_id
+        SET n.`{embedding_property}` = item.embedding
+        """
+        try:
+            driver.query(update_cypher, params={"updates": updates})
+            updated_count += len(updates)
+            logger.info(f"Embedded {updated_count}/{total_count} '{label}' nodes...")
+        except Exception as e:
+            logger.error(f"Failed to write embeddings to Neo4j for batch: {e}")
+
+    logger.info(f"Completed embedding update for {updated_count}/{total_count} '{label}' nodes.")
+    return updated_count
+
 
 def create_constraints(driver) -> None:
     """Creates minimum necessary constraints for data integrity and traversal optimization."""
@@ -173,3 +290,4 @@ def create_constraints(driver) -> None:
     create_vector_indexes(driver)
     create_fulltext_indexes(driver)
     create_text_indexes(driver)
+    embed_missing_nodes(driver)
