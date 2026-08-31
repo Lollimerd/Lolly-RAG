@@ -107,7 +107,7 @@ services:
     container_name: streamlit-frontend
     pull_policy: missing
     ports:
-      - 8501:8501
+      - 8511:8501
     environment:
       - BACKEND_URL=http://backend-server:8000
     restart: unless-stopped

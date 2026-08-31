@@ -201,13 +201,13 @@ def _records_to_documents(records: List[Dict[str, Any]]) -> List[Document]:
 @tool
 def document_search_tool(question: str, community_ids: Optional[List[str]] = None) -> str:
     """
-    Search through all user-uploaded unstructured documents (such as PDF files, Word .docx documents, text .txt files, Markdown .md files, technical specifications, guides, reports, and internal notes).
+    Search through all user-uploaded documents and datasets (such as PDF files, Word .docx documents, Excel .xlsx/.xls spreadsheets, CSV .csv data tables, text .txt files, Markdown .md files, technical specifications, guides, reports, and internal notes).
 
-    Leverages multi-index hybrid search across vector embeddings, fulltext keyword indexes (content, source, filename, description), and text indexes, extracting rich document/chunk metadata and filtering by community IDs when provided.
+    Leverages multi-index hybrid search across vector embeddings, fulltext keyword indexes (content, source, filename, description), and text indexes, extracting rich document/chunk metadata (including spreadsheet sheet names, row indices, table headers, and community IDs) when provided.
 
     Use this tool whenever:
-    - The user asks about content from uploaded files or documents.
-    - The user references specific documents, specs, manuals, project files, or reports.
+    - The user asks about content from uploaded files, spreadsheets, tables, or documents.
+    - The user references specific documents, data sheets, CSVs, specs, manuals, project files, or reports.
     - The user asks domain-specific or private project questions that would be in their document library.
 
     Args:
@@ -215,7 +215,7 @@ def document_search_tool(question: str, community_ids: Optional[List[str]] = Non
         community_ids: Optional list of community IDs to filter the search results by.
 
     Returns:
-        A formatted string containing the most relevant document passages with
+        A formatted string containing the most relevant document passages and table excerpts with
         filename, chunk, community, and metadata, or a message if no documents are available.
     """
     logger.info("document_search_tool invoked: %r (community_ids=%s)", question[:120], community_ids)

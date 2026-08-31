@@ -65,7 +65,7 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
             "Select files",
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
-            help="Supported formats: PDF, DOCX, TXT, Markdown",
+            help="Supported formats: PDF, DOCX, TXT, Markdown, CSV, Excel (.xlsx, .xls)",
             key=f"file_uploader_{st.session_state['uploader_key']}",
         )
 
@@ -115,7 +115,25 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
             key="upload_overwrite_chk",
         )
 
-        st.caption(f"Destination: :material/folder: **`{target_folder}`**")
+        has_csv = bool(uploaded_files and any(f.name.lower().endswith(".csv") for f in uploaded_files))
+        has_xlsx = bool(uploaded_files and any(f.name.lower().endswith((".xlsx", ".xls")) for f in uploaded_files))
+
+        selected_engine = "pandas"
+        if has_csv:
+            engine_choice = st.radio(
+                "CSV Ingestion engine",
+                options=["Pandas (Structured RAG)", "APOC (Database Batch)"],
+                horizontal=True,
+                index=0,
+                help="Pandas creates structured markdown tables with preserved headers (recommended for RAG). APOC runs database-side batch loading via apoc.load.csv.",
+                key="upload_engine_choice",
+            )
+            selected_engine = "apoc" if engine_choice and "APOC" in engine_choice else "pandas"
+        elif has_xlsx:
+            st.caption("📈 **Excel detected**: Using Pandas engine for multi-sheet structured ingestion.")
+
+        engine_badge = selected_engine.upper() if has_csv else "PANDAS"
+        st.caption(f"Destination: :material/folder: **`{target_folder}`** &nbsp;|&nbsp; Engine: **`{engine_badge}`**")
 
     if uploaded_files and st.button("Ingest selected files", icon=":material/upload:", type="primary"):
         total = len(uploaded_files)
@@ -129,6 +147,9 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
 
             progress_bar.progress(idx / total, text=f"{icon} Processing `{file.name}`...")
 
+            # Use APOC only for CSV if selected; XLSX and other files always use Pandas
+            file_engine = selected_engine if ext == "csv" else "pandas"
+
             with st.status(f"Ingesting `{file.name}` into `{target_folder}`...", expanded=False) as status:
                 try:
                     file_bytes = file.read()
@@ -139,6 +160,7 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
                         description=description,
                         folder=target_folder or "Root",
                         force=overwrite,
+                        engine=file_engine,
                     )
                     status_code = result.get("status")
                     if status_code == "success":
@@ -317,15 +339,23 @@ def render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders: 
             for chunk in chunks:
                 c_idx = chunk.get("chunk_index", 0)
                 c_content = chunk.get("content", "")
-                with st.expander(f"Chunk #{c_idx + 1} ({len(c_content)} chars)", icon=":material/segment:", expanded=(c_idx == 0)):
-                    st.text_area(
-                        label=f"Chunk Content {c_idx + 1}",
-                        value=c_content,
-                        height=120,
-                        disabled=True,
-                        key=f"chunk_text_{doc_id}_{c_idx}",
-                        label_visibility="collapsed",
-                    )
+                c_source = chunk.get("source", "")
+                expander_label = f"Chunk #{c_idx + 1} ({len(c_content)} chars)"
+                if c_source and c_source != filename:
+                    expander_label += f" — {c_source}"
+                with st.expander(expander_label, icon=":material/segment:", expanded=(c_idx == 0)):
+                    tab_formatted, tab_raw = st.tabs(["Formatted View", "Raw Content"])
+                    with tab_formatted:
+                        st_markdown(c_content, mermaid_theme="dark", theme_color="blue")
+                    with tab_raw:
+                        st.text_area(
+                            label=f"Raw Chunk Content {c_idx + 1}",
+                            value=c_content,
+                            height=120,
+                            disabled=True,
+                            key=f"chunk_raw_{doc_id}_{c_idx}",
+                            label_visibility="collapsed",
+                        )
         else:
             st.caption("No individual chunk records found or vector embedding in progress.")
 

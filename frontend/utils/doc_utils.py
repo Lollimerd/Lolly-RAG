@@ -27,13 +27,16 @@ INGEST_DOC_URL = f"{BACKEND_URL}/ingest/documents"
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SUPPORTED_TYPES: List[str] = ["pdf", "docx", "txt", "md"]
+SUPPORTED_TYPES: List[str] = ["pdf", "docx", "txt", "md", "csv", "xlsx", "xls"]
 
 FILE_TYPE_INFO: Dict[str, Dict[str, str]] = {
     "pdf": {"icon": "📕", "label": "PDF Document", "color": "#EF4444"},
     "docx": {"icon": "📘", "label": "Word Document", "color": "#3B82F6"},
-    "txt": {"icon": "📄", "label": "Text File", "color": "#10B981"},
+    "txt": {"icon": "📄", "label": "Text File", "color": "#64748B"},
     "md": {"icon": "📝", "label": "Markdown File", "color": "#8B5CF6"},
+    "csv": {"icon": "📊", "label": "CSV Table", "color": "#10B981"},
+    "xlsx": {"icon": "📈", "label": "Excel Workbook", "color": "#059669"},
+    "xls": {"icon": "📈", "label": "Excel 97-2003", "color": "#047857"},
 }
 
 INITIAL_FOLDERS: List[str] = [
@@ -75,8 +78,9 @@ def upload_file(
     description: str,
     folder: str,
     force: bool = False,
+    engine: str = "pandas",
 ) -> Dict[str, Any]:
-    """POST a file to backend with folder metadata encoded in description."""
+    """POST a file to backend with folder metadata and selected engine."""
     folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
     full_description = f"{folder_prefix}{description}".strip()
 
@@ -87,6 +91,7 @@ def upload_file(
             "user_id": user_id,
             "description": full_description,
             "force": str(force).lower(),
+            "engine": engine,
         },
         timeout=120,
     )

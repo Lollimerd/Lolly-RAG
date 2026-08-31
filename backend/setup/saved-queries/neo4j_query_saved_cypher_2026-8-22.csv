@@ -1,41 +1,69 @@
 name,description,query,id,parentId,isFolder
-leiden community detection,,,0,,true
-deprecrated gds graph proj,,"// Step 1: Project the graph with weight filtering
+Leiden Community Detection,,,0,,true
+0. Reset Communities & Similarities,,"MATCH (n)
+REMOVE n.CommunityId, n.communityId;
+MATCH ()-[r:SIMILAR_TO]->()
+DELETE r;",1,0,false
+1. Write SIMILAR_TO Edges via KNN,,"// Drop previous projection
+CALL gds.graph.drop('chunk-knn-graph', false) YIELD graphName;
+
+// Project DocumentChunk embeddings
 CALL gds.graph.project(
-    'community-graph',
-    ['Answer', 'Question', 'Tag', 'User'],
-    {
-        REL: {
-            type: '*',
-            orientation: 'UNDIRECTED',
-            properties: {
-                weight: {
-                    property: 'weight',
-                    defaultValue: 1.0  // Assign default weight if missing
-                }
-            },
-            // Optional: aggregate multiple relationships between same nodes
-            aggregation: 'SUM'
-        }}
-);",1,0,false
-reset community,,"MATCH (n)
-REMOVE n.communityId",2,0,false
-step 1,,"CALL gds.graph.project(
-  'stackexchange-graph',
-  ['Question', 'Answer', 'Tag', 'User'],
+  'chunk-knn-graph',
   {
-    ASKED: {orientation: 'UNDIRECTED'},
-    ANSWERS: {orientation: 'UNDIRECTED'},
-    TAGGED: {orientation: 'UNDIRECTED'},
-    PROVIDED: {orientation: 'UNDIRECTED'}
+    DocumentChunk: {
+      properties: ['embedding']
+    }
+  },
+  '*'
+);
+
+// Compute KNN & write persistent SIMILAR_TO relationships
+CALL gds.knn.write('chunk-knn-graph', {
+  nodeProperties: ['embedding'],
+  writeRelationshipType: 'SIMILAR_TO',
+  writeProperty: 'score',
+  topK: 5,
+  similarityCutoff: 0.65
+})
+YIELD relationshipsWritten, nodesCompared, similarityDistribution;",2,0,false
+2. Project Undirected Semantic Graph,,"// Drop previous projection
+CALL gds.graph.drop('doc-community-graph', false) YIELD graphName;
+
+// Project DocumentChunk with UNDIRECTED SIMILAR_TO edges
+CALL gds.graph.project(
+  'doc-community-graph',
+  {
+    DocumentChunk: {}
+  },
+  {
+    SIMILAR_TO: {
+      type: 'SIMILAR_TO',
+      orientation: 'UNDIRECTED',
+      properties: {
+        score: {
+          property: 'score',
+          defaultValue: 1.0
+        }
+      }
+    }
   }
 )
 YIELD graphName, nodeCount, relationshipCount;",3,0,false
-step 2,,"CALL gds.leiden.write('stackexchange-graph', {
+3. Write Leiden Communities,,"CALL gds.leiden.write('doc-community-graph', {
   writeProperty: 'CommunityId',
+  relationshipWeightProperty: 'score',
   includeIntermediateCommunities: true
 })
 YIELD communityCount, modularity;",4,0,false
-removes answer nodes with n score & below,,"MATCH (a:Answer)
-WHERE a.score <= 0
-DETACH DELETE a",5,,false
+4. Check Cross-File Community Distribution,,"MATCH (d:Document)-[:HAS_CHUNK]->(c:DocumentChunk)
+WHERE c.CommunityId IS NOT NULL
+RETURN c.CommunityId AS community_id,
+       collect(DISTINCT d.filename) AS files_in_community,
+       count(c) AS chunk_count
+ORDER BY size(files_in_community) DESC, chunk_count DESC;",5,0,false
+Schema & Indexes,,,6,,true
+Show Schema Visualization,,CALL db.schema.visualization;,7,6,false
+List All Indexes,,SHOW INDEXES;,8,6,false
+List Fulltext Indexes,,SHOW FULLTEXT INDEXES;,9,6,false
+List Vector Indexes,,SHOW VECTOR INDEXES;,10,6,false

@@ -24,6 +24,8 @@ torch
 # Document Loaders (unstructured document ingestion)
 pypdf          # PDF loading via PyPDFLoader
 docx2txt       # DOCX loading via Docx2txtLoader
+openpyxl       # XLSX Excel loading via pandas
+xlrd           # XLS legacy Excel loading via pandas
 
 # Data & Utilities
 python-dotenv
@@ -32,3 +34,4 @@ httpx
 httpx-sse
 requests
 pandas
+

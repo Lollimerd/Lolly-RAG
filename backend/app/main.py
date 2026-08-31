@@ -287,13 +287,15 @@ async def upload_document(
     user_id: str = Form(default="default"),
     description: str = Form(default=""),
     force: bool = Form(default=False),
+    engine: str = Form(default="pandas"),
 ):
     """
-    Upload a single document (PDF, DOCX, TXT, MD) for ingestion into Neo4j.
+    Upload a single document (PDF, DOCX, TXT, MD, CSV, XLSX, XLS) for ingestion into Neo4j.
 
     The file is chunked, embedded with the configured Ollama embedding model,
     and stored as (Document)-[:HAS_CHUNK]->(DocumentChunk) nodes in Neo4j.
     The resulting chunks are immediately queryable via document_search_tool.
+    Supports engine='pandas' (structured RAG chunks) and engine='apoc' (database-side batch load).
     Duplicate files are skipped automatically unless force=True.
     """
     if not file.filename:
@@ -318,6 +320,7 @@ async def upload_document(
             get_graph_instance(),
             embedding_model(),
             force=force,
+            engine=engine,
         )
 
         return DocumentUploadResponse(
@@ -334,6 +337,47 @@ async def upload_document(
     except Exception as e:
         logger.error(f"Error ingesting document '{file.filename}': {e}")
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+
+
+@ingest_router.post("/apoc/csv", response_model=DocumentUploadResponse)
+async def upload_csv_apoc(
+    file: UploadFile = File(...),
+    user_id: str = Form(default="default"),
+    description: str = Form(default=""),
+    force: bool = Form(default=False),
+):
+    """
+    Dedicated endpoint for CSV ingestion directly using APOC batch procedures into Neo4j.
+    """
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are supported for the APOC ingestion endpoint.")
+
+    try:
+        file_bytes = await file.read()
+
+        result = await asyncio.to_thread(
+            process_uploaded_file,
+            file_bytes,
+            file.filename,
+            user_id,
+            description,
+            get_graph_instance(),
+            embedding_model(),
+            force=force,
+            engine="apoc",
+        )
+
+        return DocumentUploadResponse(
+            status=result.get("status", "success"),
+            doc_id=result["doc_id"],
+            filename=result["filename"],
+            chunk_count=result["chunk_count"],
+            message=result.get("message")
+            or f"CSV '{file.filename}' ingested successfully via APOC with {result['chunk_count']} records.",
+        )
+    except Exception as e:
+        logger.error(f"Error ingesting CSV via APOC '{file.filename}': {e}")
+        raise HTTPException(status_code=500, detail=f"APOC Ingestion failed: {str(e)}")
 
 
 @ingest_router.get("/documents")
