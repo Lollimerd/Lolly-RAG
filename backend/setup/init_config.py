@@ -2,12 +2,13 @@
 
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from dotenv import load_dotenv
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import SearchType
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,42 @@ def summarizer():
         num_ctx=8192,  # 40k context
         tags=["summarizer_llm"],
     )
+
+@lru_cache(maxsize=1)
+def ocr_model():
+    """
+    OCR Engine / Model configuration for text extraction from images and scanned documents.
+    Provides a unified interface `.extract_text(image_input)` supporting Tesseract OCR.
+    """
+    class OCREngine:
+        def __init__(self, lang: str = "eng"):
+            self.lang = lang
+
+        def extract_text(self, img_input: Any) -> str:
+            import pytesseract
+            from PIL import Image
+
+            if isinstance(img_input, (str, os.PathLike)):
+                with Image.open(img_input) as img:
+                    return self._extract(img)
+            elif isinstance(img_input, bytes):
+                import io
+                with Image.open(io.BytesIO(img_input)) as img:
+                    return self._extract(img)
+            else:
+                return self._extract(img_input)
+
+        def _extract(self, img: Any) -> str:
+            import pytesseract
+            ocr_img = img
+            if getattr(img, "mode", None) in ("RGBA", "LA", "P"):
+                ocr_img = img.convert("RGB")
+            raw_result = pytesseract.image_to_string(ocr_img, lang=self.lang)
+            return str(raw_result).strip() if raw_result else ""
+
+    ocr_lang = os.getenv("OCR_LANG", "eng")
+    return OCREngine(lang=ocr_lang)
+
 
 _graph_instance = None
 
@@ -189,6 +226,21 @@ def create_text_indexes(driver) -> None:
 # Alias for singular call convention
 create_text_index = create_text_indexes
 
+def _embed_missing_batch_worker(
+    batch_idx: int, 
+    batch: List[Dict[str, Any]], 
+    embedder: Any
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """Worker task to embed a batch of unembedded nodes."""
+    texts = [r["text"] for r in batch]
+    embeddings = embedder.embed_documents(texts)
+    updates = [
+        {"elem_id": rec["elem_id"], "embedding": emb}
+        for rec, emb in zip(batch, embeddings)
+    ]
+    return batch_idx, updates
+
+
 def embed_missing_nodes(
     driver=None,
     batch_size: int = 32,
@@ -196,8 +248,9 @@ def embed_missing_nodes(
     text_property: str = "content",
     embedding_property: str = "embedding",
     expected_dimension: Optional[int] = None,
+    max_workers: int = 4,
 ) -> int:
-    """Embeds nodes that do not have embeddings or have mismatched embedding dimensions.
+    """Embeds nodes that do not have embeddings or have mismatched embedding dimensions using multithreading.
 
     Args:
         driver: Neo4jGraph connection instance (defaults to get_graph_instance())
@@ -206,6 +259,7 @@ def embed_missing_nodes(
         text_property: Property containing text to embed (default 'content')
         embedding_property: Property to store embedding vector (default 'embedding')
         expected_dimension: Desired embedding dimension (auto-detected if None)
+        max_workers: Maximum worker threads for concurrent embedding calls
 
     Returns:
         int: Total number of nodes updated with new embeddings.
@@ -237,30 +291,56 @@ def embed_missing_nodes(
     total_count = len(records)
     logger.info(f"Found {total_count} '{label}' nodes requiring embeddings (expected dim: {expected_dimension}).")
 
+    batches = [
+        (idx, records[i : i + batch_size])
+        for idx, i in enumerate(range(0, total_count, batch_size))
+    ]
+    num_batches = len(batches)
+    effective_workers = max(1, min(max_workers, num_batches))
+
+    logger.info(
+        "Embedding %d nodes across %d batches using %d worker threads...",
+        total_count,
+        num_batches,
+        effective_workers,
+    )
+
+    batch_updates: List[Tuple[int, List[Dict[str, Any]]]] = []
+
+    if effective_workers <= 1 or num_batches <= 1:
+        for b_idx, b_records in batches:
+            try:
+                _, updates = _embed_missing_batch_worker(b_idx, b_records, embedder)
+                batch_updates.append((b_idx, updates))
+            except Exception as e:
+                logger.error(f"Failed to compute embeddings for batch {b_idx + 1}: {e}")
+    else:
+        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+            future_to_idx = {
+                executor.submit(_embed_missing_batch_worker, b_idx, b_records, embedder): b_idx
+                for b_idx, b_records in batches
+            }
+            for future in as_completed(future_to_idx):
+                try:
+                    b_idx, updates = future.result()
+                    batch_updates.append((b_idx, updates))
+                except Exception as e:
+                    logger.error(f"Worker failed for batch: {e}")
+
+    # Sort batches by index
+    batch_updates.sort(key=lambda x: x[0])
+
     updated_count = 0
-    for i in range(0, total_count, batch_size):
-        batch = records[i:i + batch_size]
-        texts = [r["text"] for r in batch]
+    update_cypher = f"""
+    UNWIND $updates AS item
+    MATCH (n:`{label}`)
+    WHERE elementId(n) = item.elem_id
+    SET n.`{embedding_property}` = item.embedding
+    """
 
-        try:
-            embeddings = embedder.embed_documents(texts)
-        except Exception as e:
-            logger.error(f"Failed to compute embeddings for batch {i // batch_size + 1}: {e}")
+    for _, updates in batch_updates:
+        if not updates:
             continue
-
-        updates = []
-        for rec, emb in zip(batch, embeddings):
-            updates.append({
-                "elem_id": rec["elem_id"],
-                "embedding": emb,
-            })
-
-        update_cypher = f"""
-        UNWIND $updates AS item
-        MATCH (n:`{label}`)
-        WHERE elementId(n) = item.elem_id
-        SET n.`{embedding_property}` = item.embedding
-        """
         try:
             driver.query(update_cypher, params={"updates": updates})
             updated_count += len(updates)

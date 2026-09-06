@@ -19,6 +19,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ARG UID=10001
 RUN useradd --create-home --shell /bin/bash --uid "${UID}" appuser
 
+# Install system dependencies including Tesseract OCR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies into system Python environment using uv cache mount
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=backend/requirements.txt,target=requirements.txt \

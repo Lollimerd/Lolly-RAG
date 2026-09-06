@@ -6,6 +6,7 @@ previewing, and managing unstructured documents (PDF, DOCX, TXT, Markdown)
 stored in the Neo4j knowledge graph with customizable destination folders.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit as st
 from streamlit_markdown import st_markdown
 from utils.doc_utils import (
@@ -65,7 +66,7 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
             "Select files",
             type=SUPPORTED_TYPES,
             accept_multiple_files=True,
-            help="Supported formats: PDF, DOCX, TXT, Markdown, CSV, Excel (.xlsx, .xls)",
+            help="Supported formats: PDF, Word, PowerPoint (.pptx, .ppt), Text, Markdown, CSV, Excel (.xlsx, .xls), Images (PNG, JPG, WebP, etc. with OCR)",
             key=f"file_uploader_{st.session_state['uploader_key']}",
         )
 
@@ -133,57 +134,89 @@ def render_upload_modal(user_id: str, docs: list[dict]) -> None:
             st.caption("📈 **Excel detected**: Using Pandas engine for multi-sheet structured ingestion.")
 
         engine_badge = selected_engine.upper() if has_csv else "PANDAS"
-        st.caption(f"Destination: :material/folder: **`{target_folder}`** &nbsp;|&nbsp; Engine: **`{engine_badge}`**")
+        st.caption(f"Destination: 📁 **`{target_folder}`** &nbsp;|&nbsp; Engine: **`{engine_badge}`**")
 
     if uploaded_files and st.button("Ingest selected files", icon=":material/upload:", type="primary"):
         total = len(uploaded_files)
-        progress_bar = st.progress(0.0, text="Starting document ingestion...")
+        progress_bar = st.progress(0.0, text=f"Starting concurrent ingestion ({total} files)...")
         succeeded, skipped, failed = 0, 0, 0
 
-        for idx, file in enumerate(uploaded_files):
+        # Read file contents in main thread before submitting to thread pool
+        prepared_files = []
+        for file in uploaded_files:
             ext = file.name.rsplit(".", 1)[-1].lower() if "." in file.name else ""
-            file_info = FILE_TYPE_INFO.get(ext, {"icon": "📄"})
-            icon = file_info["icon"]
-
-            progress_bar.progress(idx / total, text=f"{icon} Processing `{file.name}`...")
-
-            # Use APOC only for CSV if selected; XLSX and other files always use Pandas
             file_engine = selected_engine if ext == "csv" else "pandas"
+            prepared_files.append((file.name, file.read(), file_engine))
 
-            with st.status(f"Ingesting `{file.name}` into `{target_folder}`...", expanded=False) as status:
+        def _upload_task(
+            fname: str, fbytes: bytes, fengine: str, uid: str, desc: str, fld: str, ovr: bool
+        ) -> tuple[str, dict]:
+            res = upload_file(
+                file_bytes=fbytes,
+                filename=fname,
+                user_id=uid,
+                description=desc,
+                folder=fld or "Root",
+                force=ovr,
+                engine=fengine,
+            )
+            return fname, res
+
+        status_container = st.container()
+        completed_count = 0
+        max_upload_workers = min(4, total)
+
+        with ThreadPoolExecutor(max_workers=max_upload_workers) as executor:
+            future_to_file = {
+                executor.submit(
+                    _upload_task,
+                    fname,
+                    fbytes,
+                    fengine,
+                    user_id,
+                    description,
+                    target_folder,
+                    overwrite,
+                ): fname
+                for fname, fbytes, fengine in prepared_files
+            }
+
+            for future in as_completed(future_to_file):
+                fname = future_to_file[future]
+                completed_count += 1
                 try:
-                    file_bytes = file.read()
-                    result = upload_file(
-                        file_bytes=file_bytes,
-                        filename=file.name,
-                        user_id=user_id,
-                        description=description,
-                        folder=target_folder or "Root",
-                        force=overwrite,
-                        engine=file_engine,
-                    )
+                    _, result = future.result()
                     status_code = result.get("status")
                     if status_code == "success":
                         chunk_count = result.get("chunk_count", 0)
-                        status.update(
-                            label=f"`{file.name}` ({chunk_count} chunks stored in `{target_folder}`)",
-                            state="complete",
+                        status_container.success(
+                            f"`{fname}` ({chunk_count} chunks stored in `{target_folder}`)",
+                            icon=":material/check_circle:",
                         )
                         succeeded += 1
                     elif status_code == "skipped":
-                        status.update(
-                            label=f"`{file.name}` (Already ingested — duplicate skipped)",
-                            state="complete",
+                        status_container.info(
+                            f"`{fname}` (Already ingested — duplicate skipped)",
+                            icon=":material/info:",
                         )
                         skipped += 1
                     else:
-                        status.update(label=f"`{file.name}` — {result.get('message')}", state="error")
+                        status_container.error(
+                            f"`{fname}` — {result.get('message')}",
+                            icon=":material/error:",
+                        )
                         failed += 1
                 except Exception as exc:
-                    status.update(label=f"`{file.name}` — {str(exc)[:150]}", state="error")
+                    status_container.error(
+                        f"`{fname}` — {str(exc)[:150]}",
+                        icon=":material/error:",
+                    )
                     failed += 1
 
-            progress_bar.progress((idx + 1) / total)
+                progress_bar.progress(
+                    completed_count / total,
+                    text=f"Ingested {completed_count}/{total} files...",
+                )
 
         progress_bar.empty()
 
@@ -224,7 +257,7 @@ def render_manage_folders_section(docs: list[dict]) -> None:
             with st.container(border=True):
                 rcol1, rcol2 = st.columns([0.68, 0.32])
                 with rcol1:
-                    st_markdown(f":material/folder: **`{folder}`** &nbsp;·&nbsp; `{count} files` &nbsp;·&nbsp; `{chunks} chunks`")
+                    st_markdown(f"📁 **`{folder}`** &nbsp;·&nbsp; `{count} files` &nbsp;·&nbsp; `{chunks} chunks`")
                 with rcol2:
                     if count > 0:
                         with st.popover(f"Clear ({count})", icon=":material/delete:", help=f"Permanently delete all {count} files in '{folder}'"):
@@ -275,7 +308,7 @@ def render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders: 
         col_title, col_close = st.columns([0.85, 0.15])
         with col_title:
             st_markdown(f"### {file_info['icon']} {filename}")
-            st.caption(f":material/folder: Folder: **`{folder}`** &nbsp;|&nbsp; ID: `{doc_id}`")
+            st.caption(f"📁 Folder: **`{folder}`** &nbsp;|&nbsp; ID: `{doc_id}`")
         with col_close:
             if st.button("Close", icon=":material/close:", key=f"close_inspect_{doc_id}"):
                 st.session_state["selected_doc_id"] = None
@@ -346,7 +379,7 @@ def render_file_inspector(doc: dict, folder: str, clean_desc: str, all_folders: 
                 with st.expander(expander_label, icon=":material/segment:", expanded=(c_idx == 0)):
                     tab_formatted, tab_raw = st.tabs(["Formatted View", "Raw Content"])
                     with tab_formatted:
-                        st_markdown(c_content, mermaid_theme="dark", theme_color="blue")
+                        st_markdown(c_content)
                     with tab_raw:
                         st.text_area(
                             label=f"Raw Chunk Content {c_idx + 1}",
@@ -608,9 +641,9 @@ with kpi5:
 
 # Main Tabs
 tab_explorer, tab_upload, tab_folders = st.tabs([
-    ":material/folder: Browse files",
-    ":material/upload: Upload documents",
-    ":material/folder_managed: Manage folders",
+    "📁 Browse files",
+    "📤 Upload documents",
+    "📂 Manage folders",
 ])
 
 with tab_explorer:

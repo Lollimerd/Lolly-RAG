@@ -57,6 +57,21 @@ WHERE (
         )
     )
 )
+AND (
+    $target_file_types IS NULL
+    OR size($target_file_types) = 0
+    OR toLower(d.file_type) IN $target_file_types
+)
+AND (
+    $target_filename IS NULL
+    OR $target_filename = ''
+    OR toLower(d.filename) CONTAINS toLower($target_filename)
+)
+AND (
+    $target_sheet_name IS NULL
+    OR $target_sheet_name = ''
+    OR (chunk.source IS NOT NULL AND toLower(chunk.source) CONTAINS toLower($target_sheet_name))
+)
 RETURN
     chunk.id          AS chunk_id,
     chunk.content     AS content,
@@ -128,6 +143,21 @@ WHERE (
             )
         )
     )
+)
+AND (
+    $target_file_types IS NULL
+    OR size($target_file_types) = 0
+    OR toLower(d.file_type) IN $target_file_types
+)
+AND (
+    $target_filename IS NULL
+    OR $target_filename = ''
+    OR toLower(d.filename) CONTAINS toLower($target_filename)
+)
+AND (
+    $target_sheet_name IS NULL
+    OR $target_sheet_name = ''
+    OR (chunk.source IS NOT NULL AND toLower(chunk.source) CONTAINS toLower($target_sheet_name))
 )
 RETURN
     chunk.id          AS chunk_id,

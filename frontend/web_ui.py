@@ -1,6 +1,7 @@
 # web_ui.py
 import json
 import logging
+import re
 import uuid
 import httpx
 from httpx_sse import connect_sse
@@ -40,6 +41,15 @@ st.set_page_config(
 # --- Initialize Session State AND Sync with Backend ---
 if "chats" not in st.session_state:
     st.session_state.chats = {}
+
+
+# Helper function to format markdown preview during streaming
+def format_stream_preview(text: str) -> str:
+    """Mask mermaid blocks as plain code blocks during streaming to avoid premature rendering errors."""
+    preview = re.sub(r"```mermaid", "```text", text, flags=re.IGNORECASE)
+    if preview.count("```") % 2 == 1:
+        return preview + "\n```"
+    return preview + " ▌"
 
 
 # Helper function to get the active chat object
@@ -267,7 +277,7 @@ else:
                     🦙 Ollama
                 </span>
                 <span style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); padding: 4px 12px; border-radius: 16px; font-size: 0.78rem; color: #D1FAE5; font-weight: 500;">
-                    🧠 Qwen 2.5
+                    🧠 Qwen 3.5
                 </span>
                 <span style="background: rgba(139, 92, 246, 0.15); border: 1px solid rgba(139, 92, 246, 0.4); padding: 4px 12px; border-radius: 16px; font-size: 0.78rem; color: #DDD6FE; font-weight: 500;">
                     🕸️ GraphRAG
@@ -287,6 +297,7 @@ else:
     if not active_chat["messages"]:
         SUGGESTIONS = {
             ":blue[:material/description:] What documents are available?": "What documents are currently ingested in the knowledge base?",
+            ":orange Get to know the Assistant": "Tell me about yourself",
             ":green[:material/hub:] Explore knowledge graph": "Show me the structure of the knowledge graph and key entities with a mermaid diagram",
             ":violet[:material/summarize:] Summarize key concepts": "Summarize the key topics and concepts extracted from my ingested documents",
         }
@@ -307,10 +318,11 @@ else:
                 st_markdown(message.get("content", ""), key=f"user_msg_{i}")
         else:
             with st.chat_message(name="assistant", avatar=":material/smart_toy:"):
-                if message.get("thought"):
-                    with st.expander("Agent reasoning & thought process", icon=":material/psychology:", expanded=False):
-                        st_markdown(message["thought"], mermaid_theme="dark", theme_color="blue", key=f"thought_msg_{i}")
-                st_markdown(message.get("content", ""), mermaid_theme="dark", theme_color="blue", key=f"ai_msg_{i}")
+                thought = message.get("thought")
+                if thought and thought.strip():
+                    with st.expander("Thought process", icon=":material/psychology:", expanded=False):
+                        st.markdown(thought)
+                st_markdown(message.get("content", ""), key=f"ai_msg_{i}")
 
     # Input handling
     input_prompt = st.chat_input("Ask your question...", submit_mode="disable")
@@ -330,104 +342,108 @@ else:
                 st_markdown(prompt, key=f"prompt_live_{len(active_chat['messages'])}")
 
             with st.chat_message(name="assistant", avatar=":material/smart_toy:"):
-                status_container_loc = st.empty()
-                thought_container_loc = st.empty()
-                answer_container_loc = st.empty()
-
-                with thought_container_loc.container():
-                    thought_container = st.expander("Agent reasoning & thought process", icon=":material/psychology:", expanded=True)
-                    with thought_container:
-                        thought_placeholder = st.empty()
-
-                with answer_container_loc.container():
-                    answer_placeholder = st.empty()
+                status_placeholder = st.empty()
+                answer_placeholder = st.empty()
 
                 session_id = st.session_state.get("active_chat_id", "")
                 thought_content = ""
                 answer_content = ""
+                tools_used = False
+                has_error = False
 
-                with status_container_loc.container():
-                    with st.status("Initializing Agent...", expanded=True) as status_box:
-                        try:
-                            user_id = st.session_state.get("user_name", "test_user")
-                            payload = {
-                                "question": prompt,
-                                "session_id": session_id,
-                                "user_id": user_id,
-                            }
-                            timeout = httpx.Timeout(60, read=120)
-                            with httpx.Client(timeout=timeout) as client:
-                                with connect_sse(client, "POST", AGENT_URL, json=payload) as event_source:
-                                    for sse in event_source.iter_sse():
-                                        if not sse.data or sse.data.strip() == "[DONE]":
-                                             break
+                with status_placeholder.status("Thinking...", expanded=True) as status_box:
+                    thought_stream_placeholder = st.empty()
+                    try:
+                        user_id = st.session_state.get("user_name", "test_user")
+                        payload = {
+                            "question": prompt,
+                            "session_id": session_id,
+                            "user_id": user_id,
+                        }
+                        with httpx.Client(timeout=120) as client:
+                            with connect_sse(client, "POST", AGENT_URL, json=payload) as event_source:
+                                for sse in event_source.iter_sse():
+                                    if not sse.data or sse.data.strip() == "[DONE]":
+                                        break
 
-                                        try:
-                                            data = json.loads(sse.data)
-                                        except json.JSONDecodeError:
-                                            continue
+                                    try:
+                                        data = json.loads(sse.data)
+                                    except json.JSONDecodeError:
+                                        continue
 
-                                        msg_type = data.get("type")
-                                        if msg_type == "done":
-                                            break
+                                    msg_type = data.get("type")
+                                    if msg_type == "done":
+                                        break
 
-                                        if msg_type == "status":
-                                            message = data.get("message", "")
-                                            status_state = data.get("status")
-                                            status_box.update(label=message, state="running", expanded=True)
-                                            if status_state == "running":
-                                                st.info(message, icon=":material/sync:")
-                                            elif status_state == "complete":
-                                                st.success(message, icon=":material/check_circle:")
+                                    if msg_type == "status":
+                                        tools_used = True
+                                        message_text = data.get("message", "")
+                                        status_state = data.get("status")
+                                        status_box.update(label=message_text, state="running", expanded=True)
+                                        if status_state == "running":
+                                            st.info(message_text, icon=":material/sync:")
+                                        elif status_state == "complete":
+                                            st.success(message_text, icon=":material/check_circle:")
 
-                                        elif msg_type == "token":
+                                    elif msg_type == "token":
+                                        chunk_content = data.get("content", "")
+                                        chunk_thought = data.get("reasoning_content", "")
+
+                                        if chunk_thought:
+                                            thought_content += chunk_thought
+                                            status_box.update(label="Thinking...", state="running", expanded=True)
+                                            thought_stream_placeholder.markdown(format_stream_preview(thought_content))
+
+                                        if chunk_content:
+                                            if thought_content:
+                                                thought_stream_placeholder.markdown(thought_content)
                                             status_box.update(
-                                                label="Analysis complete. Generating response...",
+                                                label="Thought process",
                                                 state="complete",
                                                 expanded=False,
                                             )
-                                            chunk_content = data.get("content", "")
-                                            chunk_thought = data.get("reasoning_content", "")
+                                            answer_content += chunk_content
+                                            answer_placeholder.markdown(format_stream_preview(answer_content))
 
-                                            if chunk_content:
-                                                answer_content += chunk_content
-                                                answer_placeholder.markdown(answer_content + " ▌")
+                                    elif msg_type == "error":
+                                        has_error = True
+                                        err_msg = data.get("content", "Unknown error")
+                                        status_box.update(label="Error occurred", state="error", expanded=True)
+                                        st.error(err_msg, icon=":material/error:")
 
-                                            if chunk_thought:
-                                                thought_content += chunk_thought
-                                                thought_placeholder.markdown(thought_content + " ▌")
+                    except httpx.TimeoutException as e:
+                        has_error = True
+                        logger.error(f"Request timeout: {e}")
+                        status_box.update(label="Request timeout", state="error", expanded=True)
+                        st.error("The request timed out. Please try again later.", icon=":material/timer_off:")
+                    except (requests.exceptions.RequestException, httpx.RequestError) as e:
+                        has_error = True
+                        logger.error(f"Connection error: {e}")
+                        status_box.update(label="Connection error", state="error", expanded=True)
+                        st.error(f"Could not connect to the API at {BACKEND_URL}. Is the backend running?", icon=":material/wifi_off:")
+                    except Exception as e:
+                        has_error = True
+                        logger.error(f"Unexpected error: {e}")
+                        status_box.update(label="Error occurred", state="error", expanded=True)
+                        st.error(f"Unexpected error: {str(e)[:200]}", icon=":material/error:")
 
-                                        elif msg_type == "error":
-                                            err_msg = data.get("content", "Unknown error")
-                                            status_box.update(label="Error occurred", state="error", expanded=True)
-                                            st.error(err_msg, icon=":material/error:")
+                    # Finalize status container state
+                    if not has_error:
+                        if thought_content.strip():
+                            thought_stream_placeholder.markdown(thought_content)
+                            status_box.update(label="Thought process", state="complete", expanded=False)
+                        elif tools_used:
+                            status_box.update(label="Actions complete", state="complete", expanded=False)
 
-                        except httpx.TimeoutException as e:
-                            logger.error(f"Request timeout: {e}")
-                            status_box.update(label="Request timeout", state="error", expanded=True)
-                            st.error("The request timed out. Please try again later.", icon=":material/timer_off:")
-                        except (requests.exceptions.RequestException, httpx.RequestError) as e:
-                            logger.error(f"Connection error: {e}")
-                            status_box.update(label="Connection error", state="error", expanded=True)
-                            st.error(f"Could not connect to the API at {BACKEND_URL}. Is the backend running?", icon=":material/wifi_off:")
-                        except Exception as e:
-                            logger.error(f"Unexpected error: {e}")
-                            status_box.update(label="Error occurred", state="error", expanded=True)
-                            st.error(f"Unexpected error: {str(e)[:200]}", icon=":material/error:")
+                # If no thoughts were generated and no tools were run, remove empty status container
+                if not has_error and not thought_content.strip() and not tools_used:
+                    status_placeholder.empty()
 
                 # Final rendering and storage
                 answer_placeholder.empty()
-                thought_placeholder.empty()
-
-                with thought_container:
-                    if thought_content:
-                        st_markdown(thought_content, mermaid_theme="dark", theme_color="blue", key=f"thought_live_{session_id}_{len(active_chat['messages'])}")
-                    else:
-                        st.caption("No agent thoughts captured")
-
                 if answer_content:
-                    st_markdown(answer_content, mermaid_theme="dark", theme_color="blue", key=f"answer_live_{session_id}_{len(active_chat['messages'])}")
-                else:
+                    st_markdown(answer_content, key=f"answer_live_{session_id}_{len(active_chat['messages'])}")
+                elif not has_error:
                     st.warning("No response content received", icon=":material/warning:")
 
                 active_chat["messages"].append(
@@ -438,14 +454,3 @@ else:
                     }
                 )
                 st.rerun()
-
-    # --- Auto-Scroll to Bottom ---
-    st.html(
-        """
-        <script>
-            var scrollingElement = (document.scrollingElement || document.body);
-            scrollingElement.scrollTop = scrollingElement.scrollHeight;
-        </script>
-        """,
-        unsafe_allow_javascript=True,
-    )

@@ -10,6 +10,8 @@ wheels/
 .venv
 .env
 
+.tmp/
+scratch/
 archive/
 .agents/
 fix.sh

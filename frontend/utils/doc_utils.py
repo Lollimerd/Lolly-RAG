@@ -27,21 +27,31 @@ INGEST_DOC_URL = f"{BACKEND_URL}/ingest/documents"
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SUPPORTED_TYPES: List[str] = ["pdf", "docx", "txt", "md", "csv", "xlsx", "xls"]
+SUPPORTED_TYPES: List[str] = [
+    "pdf", "docx", "pptx", "ppt", "txt", "md", "csv", "xlsx", "xls",
+    "png", "jpg", "jpeg", "webp", "bmp", "tiff",
+]
 
 FILE_TYPE_INFO: Dict[str, Dict[str, str]] = {
     "pdf": {"icon": "📕", "label": "PDF Document", "color": "#EF4444"},
     "docx": {"icon": "📘", "label": "Word Document", "color": "#3B82F6"},
+    "pptx": {"icon": "📊", "label": "PowerPoint Presentation", "color": "#EA580C"},
+    "ppt": {"icon": "📊", "label": "PowerPoint 97-2003", "color": "#C2410C"},
     "txt": {"icon": "📄", "label": "Text File", "color": "#64748B"},
     "md": {"icon": "📝", "label": "Markdown File", "color": "#8B5CF6"},
     "csv": {"icon": "📊", "label": "CSV Table", "color": "#10B981"},
     "xlsx": {"icon": "📈", "label": "Excel Workbook", "color": "#059669"},
     "xls": {"icon": "📈", "label": "Excel 97-2003", "color": "#047857"},
+    "png": {"icon": "🖼️", "label": "PNG Image (OCR)", "color": "#06B6D4"},
+    "jpg": {"icon": "🖼️", "label": "JPEG Image (OCR)", "color": "#0284C7"},
+    "jpeg": {"icon": "🖼️", "label": "JPEG Image (OCR)", "color": "#0284C7"},
+    "webp": {"icon": "🖼️", "label": "WebP Image (OCR)", "color": "#0EA5E9"},
+    "bmp": {"icon": "🖼️", "label": "Bitmap Image (OCR)", "color": "#38BDF8"},
+    "tiff": {"icon": "🖼️", "label": "TIFF Image (OCR)", "color": "#38BDF8"},
 }
 
 INITIAL_FOLDERS: List[str] = [
     "Root",
-    "General",
 ]
 
 

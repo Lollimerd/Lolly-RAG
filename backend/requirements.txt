@@ -24,8 +24,12 @@ torch
 # Document Loaders (unstructured document ingestion)
 pypdf          # PDF loading via PyPDFLoader
 docx2txt       # DOCX loading via Docx2txtLoader
+python-pptx    # PowerPoint PPTX presentation loading
 openpyxl       # XLSX Excel loading via pandas
 xlrd           # XLS legacy Excel loading via pandas
+pillow         # Image processing for OCR
+pytesseract    # OCR text extraction from images
+
 
 # Data & Utilities
 python-dotenv

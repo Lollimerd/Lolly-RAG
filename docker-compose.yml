@@ -22,7 +22,8 @@ services:
       - OLLAMA_DEBUG=0
       - OLLAMA_MAX_LOADED_MODELS=3
       - OLLAMA_KEEP_ALIVE=5m
-      - OLLAMA_NUM_PARALLEL=3
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_QUEUE=512
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
@@ -78,6 +79,7 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - OLLAMA_BASE_URL=http://localAI:11434
+      - MAX_EMBED_WORKERS=4
       - HF_HUB_OFFLINE=1 # TODO: Change this to 1 when we have all the models
       - HF_HOME=/home/appuser/.cache/huggingface
     networks:

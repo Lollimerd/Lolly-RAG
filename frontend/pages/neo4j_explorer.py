@@ -183,7 +183,7 @@ with st.sidebar:
     st.subheader("Graph filters", help="Filter nodes and relationships")
 
     # Focus Node Search
-    st_markdown("##### :material/search: Focus on node")
+    st_markdown("##### Focus on node")
     search_term = st.text_input(
         "Search node",
         placeholder="Search filename, topic, or ID...",
