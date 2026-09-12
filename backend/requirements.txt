@@ -11,7 +11,7 @@ langchain-community
 langchain-neo4j
 langchain-ollama
 langchain-text-splitters  # document chunking for unstructured doc ingestion
-deepagents
+deepagents>=0.7.13
 
 # Database & Graph
 neo4j
@@ -19,7 +19,8 @@ ollama
 
 # AI/ML & Embeddings
 sentence-transformers
-torch
+torch>=2.11.0
+torchvision
 
 # Document Loaders (unstructured document ingestion)
 pypdf          # PDF loading via PyPDFLoader
@@ -28,7 +29,8 @@ python-pptx    # PowerPoint PPTX presentation loading
 openpyxl       # XLSX Excel loading via pandas
 xlrd           # XLS legacy Excel loading via pandas
 pillow         # Image processing for OCR
-pytesseract    # OCR text extraction from images
+nemotron-ocr>=2.0.0   # NVIDIA Nemotron OCR text recognition
+shapely        # Geometry & bounding quad operations for OCR
 
 
 # Data & Utilities
@@ -38,4 +40,4 @@ httpx
 httpx-sse
 requests
 pandas
-
+huggingface_hub
