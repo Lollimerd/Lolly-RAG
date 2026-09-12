@@ -2,7 +2,7 @@
 text_processor.py
 -----------------
 Document loader and processor for text and document formats:
-- PDF: .pdf (via PyPDFLoader with automated Tesseract OCR fallback for scanned/image-based PDFs)
+- PDF: .pdf (via PyPDFLoader with automated Nemotron OCR fallback for scanned/image-based PDFs)
 - Word: .docx (via Docx2txtLoader)
 - Text & Markdown: .txt, .md (via TextLoader with multi-encoding fallback)
 """
@@ -148,7 +148,7 @@ def _load_pdf_with_ocr(
                             doc.page_content = f"{header}### Scanned Content (OCR):\n{ocr_combined}"
 
                         doc.metadata["is_ocr"] = True
-                        doc.metadata["ocr_engine"] = "tesseract"
+                        doc.metadata["ocr_engine"] = getattr(engine, "name", "nemotron-ocr-v2")
                         doc.metadata["image_count"] = image_count
                         logger.info("Extracted OCR text for scanned PDF page %d of '%s'", idx, filename)
 

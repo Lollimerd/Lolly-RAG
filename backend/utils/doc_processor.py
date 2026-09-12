@@ -30,15 +30,9 @@ from utils.media_processor import (
     IMAGE_EXTENSIONS,
     MEDIA_EXTENSIONS,
     PRESENTATION_EXTENSIONS,
-    ImageOCRLoader,
-    PowerPointLoader,
-    load_image_document,
     load_media_document,
-    load_presentation_document,
 )
 from utils.tabular_processor import (
-    MAX_TABULAR_CHARS_PER_CHUNK,
-    MAX_TABULAR_ROWS_PER_CHUNK,
     TABULAR_EXTENSIONS,
     ingest_csv_with_apoc,
     load_tabular_document,
@@ -486,45 +480,3 @@ def process_uploaded_file(
                 os.remove(temp_path)
             except OSError as err:
                 logger.warning("Could not remove temp file '%s': %s", temp_path, err)
-
-
-# ---------------------------------------------------------------------------
-# Backward-Compatibility Exports
-# ---------------------------------------------------------------------------
-__all__ = [
-    # Constants
-    "DEFAULT_CHUNK_SIZE",
-    "DEFAULT_CHUNK_OVERLAP",
-    "DEFAULT_CHUNK_SEPARATOR",
-    "EMBED_BATCH_SIZE",
-    "MAX_EMBED_WORKERS",
-    "WRITE_BATCH_SIZE",
-    "MAX_TABULAR_ROWS_PER_CHUNK",
-    "MAX_TABULAR_CHARS_PER_CHUNK",
-    "SUPPORTED_EXTENSIONS",
-    "TEXT_EXTENSIONS",
-    "TABULAR_EXTENSIONS",
-    "MEDIA_EXTENSIONS",
-    "PRESENTATION_EXTENSIONS",
-    "IMAGE_EXTENSIONS",
-    # Loaders & Classes
-    "PowerPointLoader",
-    "ImageOCRLoader",
-    # Functions
-    "load_document",
-    "load_text_document",
-    "load_tabular_document",
-    "load_media_document",
-    "load_presentation_document",
-    "load_image_document",
-    "chunk_documents",
-    "embed_and_store_chunks",
-    "process_uploaded_file",
-    "ingest_csv_with_apoc",
-    "find_existing_document",
-    "get_document_chunks",
-    "list_documents",
-    "update_document",
-    "delete_document",
-    "is_apoc_available",
-]

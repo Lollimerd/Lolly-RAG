@@ -179,14 +179,3 @@ def get_all_folders(docs: List[Dict[str, Any]]) -> List[str]:
     # Return with 'Root' first, then alphabetical
     others = sorted([f for f in all_f if f != "Root"])
     return ["Root"] + others
-
-
-# Backward-compatibility aliases with underscore prefixes
-_fetch_documents = fetch_documents
-_fetch_document_chunks = fetch_document_chunks
-_upload_file = upload_file
-_update_document_metadata = update_document_metadata
-_delete_document = delete_document
-_delete_all_in_folder = delete_all_in_folder
-_parse_folder = parse_folder
-_get_all_folders = get_all_folders

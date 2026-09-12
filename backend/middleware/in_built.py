@@ -24,7 +24,7 @@ clear_tool_uses = ContextEditingMiddleware(
 
 
 # Tool Call Limit Middleware: prevents infinite tool invocation loops (run-level limit)
-tool_limit = ToolCallLimitMiddleware(run_limit=2)
+tool_limit = ToolCallLimitMiddleware(run_limit=3)
 
 # Tool Retry Middleware: automatically retries transient tool failures with exponential backoff
-tool_retry = ToolRetryMiddleware(max_retries=2, backoff_factor=2.0)
+tool_retry = ToolRetryMiddleware(max_retries=3, backoff_factor=2.0)

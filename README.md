@@ -1,6 +1,6 @@
 # 🍭 Lolly RAG: Agentic GraphRAG System for Knowledge Base
 
-**Lolly RAG** is an end-to-end, high-performance **Agentic Graph Retrieval-Augmented Generation (GraphRAG)** application. It integrates local LLMs (via Ollama), Neo4j graph database vector and hybrid indexing, and document knowledge bases to provide context-aware, verifiable engineering answers and dynamic graph visualizations.
+**Lolly RAG** is an end-to-end, high-performance **Agentic Graph Retrieval-Augmented Generation (GraphRAG)** system. It integrates local LLMs (via Ollama), Neo4j graph database vector and hybrid indexing, GPU-accelerated Cross-Encoder reranking, and **NVIDIA Nemotron OCR v2** to provide context-aware, verifiable engineering answers, multi-modal file ingestion, and dynamic graph visualizations.
 
 ---
 
@@ -9,24 +9,28 @@
 ```mermaid
 flowchart TD
     subgraph UI ["Frontend (Streamlit)"]
-        WebUI["web_ui.py (Chat Interface)"]
-        Explorer["pages/neo4j_explorer.py (Graph Explorer)"]
-        DocIngestion["pages/doc_injestion.py (Document Explorer & Ingestion)"]
+        WebUI["web_ui.py\n(Chat Interface & Direct File Attachments)"]
+        Explorer["pages/neo4j_explorer.py\n(Graph Explorer & Topology)"]
+        DocIngestion["pages/doc_ingestion.py\n(Document Explorer & Batch Ingestion)"]
     end
 
     subgraph Backend ["Backend Service (FastAPI)"]
-        API["app/main.py"]
-        Agent["agents/agent.py (RAG Agent)"]
-        Tools["tools/document_search.py (Document Search Tool)"]
+        API["app/main.py (REST & SSE Stream API)"]
+        Agent["agents/agent.py (Autonomous RAG Agent)"]
+        Tools["tools/document_search.py\n(Hybrid Vector + Fulltext Search)"]
         Memory["utils/memory.py (Neo4j Session & User Memory)"]
-        DocProc["utils/doc_processor.py (Doc Chunking & Graph Ingestion)"]
-        Middleware["middleware/in_built.py (Tool & Context Middleware)"]
+        DocProc["utils/doc_processor.py\n(Document Pipeline Orchestrator)"]
+        MediaProc["utils/media_processor.py\n(Nemotron OCR & PPTX Loader)"]
+        TabularProc["utils/tabular_processor.py\n(CSV & Excel / APOC Ingestion)"]
+        TextProc["utils/text_processor.py\n(PDF, Word, Markdown, TXT)"]
+        Middleware["middleware/in_built.py\n(Tool Limit, Retry & Context Middleware)"]
     end
 
     subgraph Infrastructure ["Local AI & Graph Infrastructure"]
-        Neo4j[("Neo4j DB (5.26)\n- Vector Indexes\n- Fulltext & Text Indexes\n- Document & Chunk Graph")]
-        Ollama[("Ollama Server\n- qwen3.5:4b\n- jina-embeddings-v2")]
+        Neo4j[("Neo4j DB (5.26)\n- Vector Cosine Indexes\n- Fulltext & Text Indexes\n- Document & Chunk Graph")]
+        Ollama[("Ollama Server\n- qwen3.5:4b (Reasoner)\n- qwen3.5:0.8b (Summarizer)\n- jina-embeddings-v2")]
         Reranker["Cross-Encoder Reranker\n(ms-marco-MiniLM-L-6-v2)"]
+        OCR["NVIDIA Nemotron OCR v2\n(Layout & Visual Text Extraction)"]
     end
 
     WebUI <-->|HTTP / SSE| API
@@ -35,7 +39,15 @@ flowchart TD
 
     API --> Agent
     API --> DocProc
+    DocProc --> MediaProc
+    DocProc --> TabularProc
+    DocProc --> TextProc
+    MediaProc --> OCR
+    TextProc --> OCR
+
     DocProc --> Neo4j
+    TabularProc --> Neo4j
+
     Agent --> Tools
     Agent --> Middleware
     Tools --> Neo4j
@@ -48,14 +60,17 @@ flowchart TD
 
 ## 🌟 Key Features
 
-| Feature                                        | Description                                                                                                                                                                                                                                                     | Key Tech & Highlights                                          |
-| :--------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------- |
-| **🤖 Autonomous Agentic GraphRAG**              | Powered by[`deepagents`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/agents/agent.py) and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge. | LangChain,`deepagents`, Ollama LLMs                            |
-| **⚡ Vector + Graph Hybrid Search**             | Combines Neo4j vector cosine similarity indexes on`DocumentChunk` nodes with fulltext keyword indexes on documents, text indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking.                                                               | Neo4j Vector Indexes, Fulltext Search,`ms-marco-MiniLM-L-6-v2` |
-| **📥 Multi-Format Document Ingestion**          | Ingestion pipeline for PDFs, Word`.docx`, Markdown `.md`, and plain text `.txt` with automatic node creation, chunking, vector embedding generation, and relationship wiring `(Document)-[:HAS_CHUNK]->(DocumentChunk)`.                                        | PDF / DOCX / MD / TXT,`jina-embeddings-v2-base-en`             |
-| **📊 Visual Graph Explorer & Analytics**        | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit.                                                                                                                         | PyVis Network Visualizer, Streamlit Analytics                  |
-| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`).                                                                                                   | Neo4j Graph Sessions, Auto-Healing Graph Routines              |
-| **🔮 Robust Middleware Pipeline**               | Integrated[`middleware/in_built.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/middleware/in_built.py) handling automatic summarization, tool call limits, contextual trimming, and tool retry mechanisms.                                 | Summarization, Context Editing, Tool Call Limits               |
+| Feature | Description | Key Tech & Highlights |
+| :--- | :--- | :--- |
+| **🤖 Autonomous Agentic GraphRAG** | Powered by `deepagents` and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge. | LangChain, `deepagents`, Ollama (`qwen3.5:4b`) |
+| **👁️ NVIDIA Nemotron OCR v2** | High-accuracy deep learning OCR pipeline replacing legacy Tesseract. Automatically transcribes text, tables, diagrams, and visual layout from images and scanned PDFs into structured searchable chunks. | `nemotron-ocr-v2`, `torchvision`, `shapely`, GPU-accelerated |
+| **📎 Native In-Chat File Attachments** | Drag-and-drop or select multiple documents/media directly inside the chat bar. Automatically ingests attachments into the knowledge graph under "Chat Uploads" before querying the agent. | Streamlit `st.chat_input(accept_file="multiple")`, SSE status feedback |
+| **📊 Multi-Modal Ingestion Pipeline** | Specialized loaders for diverse formats: Spreadsheets (`.xlsx`, `.xls`), CSV (`.csv` via APOC/chunking), PowerPoint (`.pptx`, `.ppt` with slide/table/notes extraction), PDF (with OCR fallback), Word (`.docx`), Markdown (`.md`), and images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`). | `python-pptx`, `openpyxl`, `pandas`, `pypdf`, `Pillow` |
+| **⚡ Vector + Graph Hybrid Search** | Combines Neo4j vector cosine similarity indexes on `DocumentChunk` nodes with fulltext keyword indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking. | Neo4j Vector Indexes, Fulltext Search, `ms-marco-MiniLM-L-6-v2` |
+| **🔍 Smart Intent Detection** | Search tool automatically detects visual/diagram, presentation/slide, and tabular dataset intent from natural user queries, routing to specialized chunk types (`[Media: Image & OCR Text]`, `[Dataset: Tabular Records]`). | Regex Query Classifier, Metadata Filtering |
+| **📈 Visual Graph Explorer & Analytics** | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit. | PyVis Network Visualizer, Streamlit Analytics |
+| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`). | Neo4j Graph Sessions, Auto-Healing Graph Routines |
+| **🔮 Robust Middleware Pipeline** | Integrated `middleware/in_built.py` handling automatic summarization, tool call limits (3 runs), contextual trimming, and tool retry mechanisms. | Summarization, Context Editing, Tool Call Limits & Retries |
 
 ---
 
@@ -65,35 +80,39 @@ flowchart TD
 lolly-rag/
 ├── backend/
 │   ├── agents/
-│   │   └── agent.py              # Agent initialization & system prompts
+│   │   └── agent.py              # Agent initialization & system prompts (Document-First Rule)
 │   ├── app/
-│   │   └── main.py               # FastAPI application & REST endpoints
+│   │   └── main.py               # FastAPI application, REST endpoints & SSE streaming
 │   ├── middleware/
-│   │   └── in_built.py           # Context & tool call middleware
+│   │   └── in_built.py           # Context, tool limit & retry middleware
 │   ├── setup/
-│   │   └── init_config.py        # Ollama LLM, embedding & Neo4j vector index setups
+│   │   └── init_config.py        # Ollama LLM, Nemotron OCR v2 & Neo4j vector configs
 │   ├── tools/
 │   │   └── document_search.py    # Multi-index hybrid search & Cross-Encoder reranking
 │   ├── utils/
 │   │   ├── dashboard.py          # Neo4j query helpers & graph statistics
-│   │   ├── doc_processor.py      # Document parser, chunker & graph builder
+│   │   ├── doc_processor.py      # Main document ingestion & dispatch orchestrator
+│   │   ├── media_processor.py    # PowerPoint (.pptx) & Nemotron OCR image loaders
+│   │   ├── tabular_processor.py  # CSV & Excel (.xlsx, .xls) chunking & APOC ingestion
+│   │   ├── text_processor.py     # PDF (with OCR fallback), DOCX, MD & TXT loaders
 │   │   ├── memory.py             # User and chat session graph operations
 │   │   └── utils.py              # Environment & diagnostic tools
-│   ├── Dockerfile
+│   ├── Dockerfile                # Python 3.12 image with CUDA runtime dependencies
 │   └── requirements.txt
 ├── frontend/
 │   ├── pages/
-│   │   ├── doc_injestion.py      # Document file explorer & upload page
-│   │   └── neo4j_explorer.py     # Interactive Neo4j graph viewer
+│   │   ├── doc_ingestion.py      # Document explorer, folder manager & batch upload page
+│   │   └── neo4j_explorer.py     # Interactive Neo4j graph viewer & analytics
 │   ├── utils/
-│   │   └── ui_utils.py           # Custom Streamlit UI components & layout helpers
-│   ├── web_ui.py                 # Main Streamlit chat app
+│   │   ├── doc_utils.py          # Frontend document API helper routines
+│   │   └── ui_utils.py           # Streamlit UI styling & component helpers
+│   ├── web_ui.py                 # Main Streamlit chat UI with native multi-file uploads
 │   ├── Dockerfile
 │   └── requirements.txt
-├── docker-compose.yml             # Containerized services (Ollama, Neo4j, Backend, Frontend)
-├── pyproject.toml                 # Project metadata & pyright setup
-├── requirements.txt               # Full Python dependency specifications
-└── run.sh                         # Unified launch script for FastAPI & Streamlit
+├── docker-compose.yml             # Full-stack composition (Ollama, Neo4j, Backend, Frontend)
+├── pyproject.toml                 # Project dependencies & Python >=3.12 requirement
+├── run.sh                         # Launch script with model caching (Reranker + Nemotron OCR)
+└── .env.example                   # Environment configuration template
 ```
 
 ---
@@ -102,18 +121,17 @@ lolly-rag/
 
 ### 1. Prerequisites
 
-* **Python 3.13+**
+* **Python 3.12+** (required for PyTorch, torchvision, and Nemotron OCR v2 compatibility)
 * [**uv**](https://docs.astral.sh/uv/) (recommended fast Python package manager)
-* **Docker & Docker Compose** (for running Neo4j and optional containerized Ollama)
+* **Docker & Docker Compose** (for running Neo4j and optional containerized services)
 * **Ollama** running locally or via Docker
+* **NVIDIA GPU** with CUDA support (recommended for optimal Nemotron OCR & Cross-Encoder inference)
 
 ---
 
 ### 2. Local Setup with `uv` (Recommended)
 
 #### Step 1: Install `uv`
-
-If you do not have `uv` installed, install it via:
 
 ```bash
 # macOS / Linux
@@ -125,14 +143,12 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 #### Step 2: Clone and Sync Environment
 
-Clone the repository, create a virtual environment, and sync dependencies using `uv`:
-
 ```bash
 git clone <repository-url>
 cd lolly-rag
 
-# Create virtual environment with Python 3.13
-uv venv --python 3.13
+# Create virtual environment with Python 3.12
+uv venv --python 3.12
 
 # Activate virtual environment
 source .venv/bin/activate       # On Windows: .venv\Scripts\activate
@@ -143,23 +159,33 @@ uv sync
 
 #### Step 3: Configure Environment Variables
 
-Copy `.env.example` to `.env` and verify database and Ollama endpoints:
+Copy `.env.example` to `.env` and verify database, Ollama, and worker settings:
 
 ```bash
 cp .env.example .env
 ```
 
-Default `.env` configuration:
+Configuration reference:
 
 ```env
+# Database Credentials
 NEO4J_URL="bolt://localhost:7687"
 NEO4J_USERNAME="neo4j"
 NEO4J_PASSWORD="password"
 
+# Ollama Endpoint & Embeddings
 OLLAMA_BASE_URL="http://localhost:11434"
 EMBEDDING_MODEL="jina/jina-embeddings-v2-base-en:latest"
 
+# Worker Concurrency
+workers=4
+
+# Backend Service URL
 BACKEND_URL="http://localhost:8000"
+
+# HuggingFace & Nemotron OCR (Set to 0 on initial boot to download weights, then 1)
+HF_HUB_OFFLINE=1
+HF_HOME="/home/appuser/.cache/huggingface"
 ```
 
 #### Step 4: Pull Required Ollama Models
@@ -174,19 +200,20 @@ ollama pull qwen3.5:0.8b
 
 #### Step 5: Start Neo4j
 
-Start a local Neo4j database container:
+Start a local Neo4j database container with APOC plugin enabled:
 
 ```bash
 docker run -d \
   --name lolly-neo4j \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/password \
+  -e NEO4J_PLUGINS='["apoc"]' \
   neo4j:5.26
 ```
 
 #### Step 6: Launch Applications
 
-**Option A: Unified Launch Script**
+**Option A: Unified Launch Script (Pre-downloads HuggingFace models & boots both services)**
 
 ```bash
 chmod +x run.sh
@@ -216,12 +243,12 @@ Access the interfaces:
 To spin up all services (Neo4j, Ollama, FastAPI backend, and Streamlit frontend) in containers:
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ```
 
 Service Ports:
 
-* **Streamlit Frontend**: `http://localhost:8501`
+* **Streamlit Frontend**: `http://localhost:8511` (or `8501` if configured)
 * **FastAPI Backend**: `http://localhost:8000`
 * **Neo4j Browser**: `http://localhost:7474`
 * **Ollama API**: `http://localhost:11434`
@@ -230,14 +257,15 @@ Service Ports:
 
 ## 🛠 Model Configuration
 
-Model definitions and LLM parameters are set in [`backend/setup/init_config.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/setup/init_config.py):
+Model definitions, OCR pipelines, and LLM parameters are managed in [`backend/setup/init_config.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/setup/init_config.py):
 
-| Role                | Default Model / Class        | Function                                                |
-| :------------------ | :--------------------------- | :------------------------------------------------------ |
-| **Answer LLM**      | `qwen3.5:4b`                 | Agent reasoning, tool orchestration & answer generation |
-| **Embedding Model** | `jina-embeddings-v2-base-en` | 768-dim vector embeddings for Neo4j Vector Indexes      |
-| **Reranker Model**  | `ms-marco-MiniLM-L-6-v2`     | PyTorch GPU cross-encoder candidate re-scoring          |
-| **Summarizer LLM**  | `qwen3.5:0.8b`               | Historical chat context condensation                    |
+| Role | Default Model / Class | Function |
+| :--- | :--- | :--- |
+| **Answer LLM** | `qwen3.5:4b` | Agent reasoning, tool orchestration & answer generation |
+| **Embedding Model** | `jina-embeddings-v2-base-en` | 768-dimensional vector embeddings for Neo4j Vector Indexes |
+| **Reranker Model** | `cross-encoder/ms-marco-MiniLM-L-6-v2` | PyTorch GPU cross-encoder candidate re-scoring |
+| **OCR Engine** | `nvidia/nemotron-ocr-v2` | Deep learning OCR, layout segmentation & visual text extraction |
+| **Summarizer LLM** | `qwen3.5:0.8b` | Historical chat context condensation & token management |
 
 ---
 
@@ -253,23 +281,28 @@ Model definitions and LLM parameters are set in [`backend/setup/init_config.py`]
 
 * `GET /users`: Retrieve all registered users
 * `GET /user/{user_id}/chats`: Retrieve sessions for a specified user
+* `DELETE /user/{user_id}`: Delete user and all associated chat history
 * `GET /chat/{session_id}`: Fetch message history for a session
-* `POST /agent/ask`: Primary agent query endpoint (supports SSE streaming)
+* `DELETE /chat/{session_id}`: Delete a specific chat session
+* `POST /repair-sessions`: Repair orphaned messages and missing graph relationships
+* `POST /agent/ask`: Primary agent query endpoint (supports SSE streaming & `attached_files`)
 
 ### Document Ingestion & Management
 
-* `POST /ingest/documents`: Upload and chunk document (`.pdf`, `.docx`, `.txt`, `.md`)
+* `POST /ingest/documents`: Upload and chunk documents, spreadsheets, presentations, and images (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.csv`, `.png`, `.jpg`, etc.)
+* `POST /ingest/apoc/csv`: Ingest large CSV files directly using Neo4j APOC
 * `GET /ingest/documents`: List uploaded documents metadata
 * `GET /ingest/documents/{doc_id}/chunks`: Retrieve chunks for a document
-* `PUT /ingest/documents/{doc_id}`: Update document description / folder metadata
+* `PUT /ingest/documents/{doc_id}`: Update document description or folder metadata
 * `DELETE /ingest/documents/{doc_id}`: Delete document and associated chunks
 
 ### Analytics & Graph
 
 * `GET /stats/summary`: Database document, user, session, and message metrics
+* `GET /stats/history`: Activity history log
 * `GET /stats/entity_counts`: Entity and relationship type counts
 * `GET /graph/search`: Search knowledge graph nodes
-* `POST /graph/sample`: Graph network topology sample for visualization
+* `POST /graph/sample`: Graph network topology sample for PyVis visualization
 
 ---
 

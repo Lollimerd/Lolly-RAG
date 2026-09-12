@@ -20,6 +20,7 @@ from utils.ui_utils import (
     BACKEND_URL,
     AGENT_URL,
 )
+from utils.doc_utils import SUPPORTED_TYPES, upload_file
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -296,8 +297,8 @@ else:
     suggested_prompt = None
     if not active_chat["messages"]:
         SUGGESTIONS = {
+            ":orange [:material/smart_toy:] Get to know the Assistant": "Tell me about yourself",
             ":blue[:material/description:] What documents are available?": "What documents are currently ingested in the knowledge base?",
-            ":orange Get to know the Assistant": "Tell me about yourself",
             ":green[:material/hub:] Explore knowledge graph": "Show me the structure of the knowledge graph and key entities with a mermaid diagram",
             ":violet[:material/summarize:] Summarize key concepts": "Summarize the key topics and concepts extracted from my ingested documents",
         }
@@ -315,6 +316,9 @@ else:
         role = message.get("role", "user")
         if role == "user":
             with st.chat_message(name="user", avatar=":material/person:"):
+                files_str = message.get("files", "")
+                if files_str:
+                    st.caption(" • ".join(f":material/attachment: `{fn.strip()}`" for fn in files_str.split(",") if fn.strip()))
                 st_markdown(message.get("content", ""), key=f"user_msg_{i}")
         else:
             with st.chat_message(name="assistant", avatar=":material/smart_toy:"):
@@ -324,21 +328,43 @@ else:
                         st.markdown(thought)
                 st_markdown(message.get("content", ""), key=f"ai_msg_{i}")
 
-    # Input handling
-    input_prompt = st.chat_input("Ask your question...", submit_mode="disable")
-    prompt = input_prompt or suggested_prompt
+    # Native Streamlit chat input supporting document and media attachments
+    chat_val = st.chat_input(
+        "Ask a question or attach files...",
+        accept_file="multiple",
+        file_type=SUPPORTED_TYPES,
+        submit_mode="disable",
+    )
 
-    if prompt:
+    prompt = ""
+    attached_files = []
+
+    if chat_val:
+        prompt = chat_val.text.strip()
+        attached_files = getattr(chat_val, "files", []) or []
+    elif suggested_prompt:
+        prompt = suggested_prompt
+
+    if not prompt and attached_files:
+        prompt = f"Please analyze and summarize the attached document(s): {', '.join(f.name for f in attached_files)}"
+
+    if prompt or attached_files:
         active_chat = get_active_chat()
 
         if active_chat:
-            active_chat["messages"].append({"role": "user", "content": prompt})
+            file_names = [f.name for f in attached_files]
+            user_msg = {"role": "user", "content": prompt}
+            if file_names:
+                user_msg["files"] = ", ".join(file_names)
+            active_chat["messages"].append(user_msg)
 
             # Set a title for new chats based on the first message
             if active_chat["title"] in ("New chat", "New Chat") or active_chat["title"].startswith("Chat "):
                 active_chat["title"] = prompt[:18] + ("..." if len(prompt) > 18 else "")
 
             with st.chat_message(name="user", avatar=":material/person:"):
+                if file_names:
+                    st.caption(" • ".join(f":material/attachment: `{fn}`" for fn in file_names))
                 st_markdown(prompt, key=f"prompt_live_{len(active_chat['messages'])}")
 
             with st.chat_message(name="assistant", avatar=":material/smart_toy:"):
@@ -351,14 +377,36 @@ else:
                 tools_used = False
                 has_error = False
 
-                with status_placeholder.status("Thinking...", expanded=True) as status_box:
+                with status_placeholder.status("Processing...", expanded=True) as status_box:
+                    user_id = st.session_state.get("user_name", "test_user")
+
+                    # Ingest any attached documents before querying the RAG agent
+                    if attached_files:
+                        for f in attached_files:
+                            status_box.update(label=f"Ingesting {f.name} into knowledge graph...", state="running", expanded=True)
+                            try:
+                                file_bytes = f.getvalue()
+                                upload_file(
+                                    file_bytes=file_bytes,
+                                    filename=f.name,
+                                    user_id=user_id,
+                                    description=f"Attached in chat by {user_id}",
+                                    folder="Chat Uploads",
+                                    force=True,
+                                )
+                                status_box.write(f":material/check_circle: Ingested `{f.name}`")
+                            except Exception as upload_err:
+                                logger.error("Failed to ingest attached file %s: %s", f.name, upload_err)
+                                status_box.write(f":material/error: Failed to ingest `{f.name}`: {upload_err}")
+                        status_box.update(label="Thinking...", state="running", expanded=True)
+
                     thought_stream_placeholder = st.empty()
                     try:
-                        user_id = st.session_state.get("user_name", "test_user")
                         payload = {
                             "question": prompt,
                             "session_id": session_id,
                             "user_id": user_id,
+                            "attached_files": file_names if file_names else None,
                         }
                         with httpx.Client(timeout=120) as client:
                             with connect_sse(client, "POST", AGENT_URL, json=payload) as event_source:

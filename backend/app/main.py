@@ -6,7 +6,7 @@ import uuid
 import uvicorn
 
 from datetime import datetime
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import urlparse
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, APIRouter, UploadFile, File, Form
@@ -120,6 +120,9 @@ class QueryRequest(BaseModel):
     session_id: str
     user_id: str = "test_user"  # fallback
     mode: str = "auto"  # 'auto' or 'custom'
+    attached_files: Optional[List[str]] = None
+    files: Optional[List[str]] = None
+    images: Optional[List[Union[str, Dict[str, Any]]]] = None
 
 
 @system_router.get("/")
@@ -524,6 +527,26 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
 
         try:
             # 1. Prepare Input
+            # Extract any attached files / images from payload
+            attached = []
+            if request.attached_files:
+                attached.extend(request.attached_files)
+            if request.files:
+                attached.extend([f for f in request.files if f not in attached])
+            if request.images:
+                for img_item in request.images:
+                    if isinstance(img_item, str) and img_item not in attached:
+                        attached.append(img_item)
+                    elif isinstance(img_item, dict) and img_item.get("filename") and img_item["filename"] not in attached:
+                        attached.append(img_item["filename"])
+
+            # Formulate effective question with attached file context if not already mentioned
+            effective_question = request.question
+            if attached:
+                files_header = f"[Attached File(s): {', '.join(attached)}]"
+                if not any(f in request.question for f in attached) and files_header not in request.question:
+                    effective_question = f"{files_header}\n{request.question}"
+
             # Retrieve history
             history_response = await asyncio.to_thread(
                 get_chat_messages, request.session_id
@@ -545,12 +568,11 @@ async def agent_ask(request: QueryRequest) -> StreamingResponse:
                             messages.append(AIMessage(content=content))
 
             # Construct input for Graph Agent (expects 'messages' key in state)
-            input_messages = messages + [HumanMessage(content=request.question)]
+            input_messages = messages + [HumanMessage(content=effective_question)]
             input_data = {
                 "messages": input_messages,
-                "question": request.question,
+                "question": effective_question,
                 "session_id": request.session_id,
-                "session_topic": "",  # Middleware will populate or use default
             }
 
             # Save user message to DB
