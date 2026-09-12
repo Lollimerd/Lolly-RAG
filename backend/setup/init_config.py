@@ -2,15 +2,17 @@
 
 import os
 import logging
+from PIL import Image
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from dotenv import load_dotenv
+import io
+import tempfile
 from langchain_ollama import OllamaEmbeddings, ChatOllama
 from langchain_neo4j import Neo4jGraph, Neo4jVector
 from langchain_neo4j.vectorstores.neo4j_vector import SearchType
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-
 logger = logging.getLogger(__name__)
 
 # ===========================================================================================================================================================
@@ -73,6 +75,106 @@ def reranker_model():
         },
     )
 
+
+# ===========================================================================================================================================================
+# OCR Models (Nemotron OCR v2)
+# ===========================================================================================================================================================
+
+def is_nemotron_available() -> bool:
+    """Check if the nemotron-ocr package is installed and importable."""
+    try:
+        from nemotron_ocr.inference.pipeline_v2 import NemotronOCRV2  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class NemotronOCRWrapper:
+    """Lightweight, lazy wrapper for NVIDIA Nemotron OCR v2 text extraction."""
+    name: str = "nemotron-ocr-v2"
+
+    def __init__(
+        self,
+        lang: str = "en",
+        merge_level: str = "paragraph",
+        model_dir: Optional[str] = None,
+        detector_only: bool = False,
+        skip_relational: bool = False,
+    ):
+        self.lang = lang
+        self.merge_level = merge_level
+        self.model_dir = model_dir
+        self.detector_only = detector_only
+        self.skip_relational = skip_relational
+        self._pipeline = None
+
+    @property
+    def pipeline(self) -> Any:
+        """Lazily initialize NemotronOCRV2 pipeline on first use."""
+        if self._pipeline is None:
+            try:
+                from nemotron_ocr.inference.pipeline_v2 import NemotronOCRV2
+            except ImportError as err:
+                raise ImportError(
+                    "nemotron-ocr package is not installed. Please install it with: "
+                    "`uv pip install nemotron-ocr` or `pip install nemotron-ocr`"
+                ) from err
+
+            logger.info("Initializing NemotronOCRV2 pipeline (lang=%s, merge_level=%s)...", self.lang, self.merge_level)
+            kwargs: Dict[str, Any] = {"model_dir": self.model_dir} if self.model_dir else {"lang": self.lang}
+            if self.detector_only:
+                kwargs["detector_only"] = True
+            if self.skip_relational:
+                kwargs["skip_relational"] = True
+
+            self._pipeline = NemotronOCRV2(**kwargs)
+            logger.info("NemotronOCRV2 successfully initialized.")
+        return self._pipeline
+
+    def _normalize_image_input(self, image_input: Any) -> Any:
+        """Convert input image into a format optimized for NemotronOCRV2."""
+        if isinstance(image_input, (str, os.PathLike, io.BytesIO)):
+            return image_input
+        if isinstance(image_input, (bytes, bytearray)):
+            return io.BytesIO(image_input)
+        if isinstance(image_input, Image.Image):
+            import numpy as np
+            import torch
+            # Direct PIL -> torch CHW tensor (fast in-memory path, avoids codec/disk overhead)
+            arr = np.array(image_input.convert("RGB"))
+            return torch.from_numpy(arr).permute(2, 0, 1)
+        return image_input
+
+    def extract_text(
+        self,
+        image_input: Union[str, bytes, io.BytesIO, Image.Image, Any],
+        merge_level: Optional[str] = None,
+    ) -> str:
+        """Extract recognized text aggregated by reading order and layout grouping."""
+        norm_img = self._normalize_image_input(image_input)
+        preds = self.pipeline(norm_img, merge_level=merge_level or self.merge_level)
+        if not preds:
+            return ""
+        if isinstance(preds, dict):
+            preds = [preds]
+
+        texts = [p["text"] for p in preds if isinstance(p, dict) and p.get("text", "").strip()]
+        return "\n\n".join(texts)
+
+    def invoke(self, input_data: Any, config: Optional[Dict[str, Any]] = None) -> str:
+        """LangChain Runnable compatibility."""
+        return self.extract_text(input_data)
+
+
+@lru_cache(maxsize=1)
+def ocr_model() -> NemotronOCRWrapper:
+    """Singleton Nemotron OCR v2 text extraction pipeline."""
+    return NemotronOCRWrapper(
+        lang=os.getenv("NEMOTRON_OCR_LANG", "en"),
+        merge_level=os.getenv("NEMOTRON_OCR_MERGE_LEVEL", "paragraph"),
+        model_dir=os.getenv("NEMOTRON_OCR_MODEL_DIR"),
+    )
+
 def summarizer():
     """summarizes historical context"""
     return ChatOllama(
@@ -81,42 +183,6 @@ def summarizer():
         num_ctx=8192,  # 40k context
         tags=["summarizer_llm"],
     )
-
-@lru_cache(maxsize=1)
-def ocr_model():
-    """
-    OCR Engine / Model configuration for text extraction from images and scanned documents.
-    Provides a unified interface `.extract_text(image_input)` supporting Tesseract OCR.
-    """
-    class OCREngine:
-        def __init__(self, lang: str = "eng"):
-            self.lang = lang
-
-        def extract_text(self, img_input: Any) -> str:
-            import pytesseract
-            from PIL import Image
-
-            if isinstance(img_input, (str, os.PathLike)):
-                with Image.open(img_input) as img:
-                    return self._extract(img)
-            elif isinstance(img_input, bytes):
-                import io
-                with Image.open(io.BytesIO(img_input)) as img:
-                    return self._extract(img)
-            else:
-                return self._extract(img_input)
-
-        def _extract(self, img: Any) -> str:
-            import pytesseract
-            ocr_img = img
-            if getattr(img, "mode", None) in ("RGBA", "LA", "P"):
-                ocr_img = img.convert("RGB")
-            raw_result = pytesseract.image_to_string(ocr_img, lang=self.lang)
-            return str(raw_result).strip() if raw_result else ""
-
-    ocr_lang = os.getenv("OCR_LANG", "eng")
-    return OCREngine(lang=ocr_lang)
-
 
 _graph_instance = None
 

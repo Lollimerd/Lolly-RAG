@@ -4,7 +4,7 @@ media_processor.py
 Document loader and text extractor for presentations and images:
 - PowerPoint presentations: .pptx, .ppt (via python-pptx with structured Markdown tables,
   speaker notes, and automated OCR text extraction for embedded slide images)
-- Images: .png, .jpg, .jpeg, .webp, .bmp, .tiff (via Pillow and Tesseract OCR text extraction)
+- Images: .png, .jpg, .jpeg, .webp, .bmp, .tiff (via Pillow and Nemotron OCR text extraction)
 """
 
 from __future__ import annotations
@@ -282,7 +282,7 @@ class ImageOCRLoader(BaseLoader):
                         "height": height,
                         "format": img_format,
                         "is_image": True,
-                        "ocr_engine": "tesseract",
+                        "ocr_engine": getattr(engine, "name", "nemotron-ocr-v2"),
                     },
                 )
         except Exception as exc:

@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 DEFAULT_TABULAR_ROWS_PER_CHUNK = 20  # Manageable record count for semantic dense embeddings
 DEFAULT_TABULAR_ROW_OVERLAP = 2     # Sliding overlap between consecutive chunks
 MAX_TABULAR_CHARS_PER_CHUNK = 2500  # Soft character limit for tabular chunks

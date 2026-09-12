@@ -49,6 +49,8 @@ VECTOR_TOP_K = 1000        # candidates fetched across hybrid index search branc
 RERANKER_TOP_N = 25        # documents passed to the LLM after reranking
 MAX_CONTENT_CHARS = 2500   # truncation for page_content fed to cross-encoder/LLM
 TABULAR_EXTENSIONS = {"csv", "xlsx", "xls"}
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "bmp", "tiff"}
+PRESENTATION_EXTENSIONS = {"pptx", "ppt"}
 
 
 def _get_compressor() -> CrossEncoderReranker:
@@ -92,7 +94,11 @@ def _normalize_file_types(file_type: Optional[str]) -> Optional[List[str]]:
         return ["txt"]
     elif ft in ("markdown", "md"):
         return ["md"]
-    elif ft in ("csv", "xlsx", "xls", "pdf", "docx"):
+    elif ft in ("image", "images", "img", "imgs", "picture", "pictures", "photo", "photos", "screenshot", "screenshots", "diagram", "diagrams", "ocr"):
+        return ["png", "jpg", "jpeg", "webp", "bmp", "tiff"]
+    elif ft in ("presentation", "presentations", "slides", "powerpoint", "ppt", "pptx"):
+        return ["pptx", "ppt"]
+    elif ft in ("csv", "xlsx", "xls", "pdf", "docx", "pptx", "ppt", "png", "jpg", "jpeg", "webp", "bmp", "tiff"):
         return [ft]
     return [ft]
 
@@ -104,16 +110,20 @@ def _auto_detect_tabular_filters(
     sheet_name: Optional[str] = None,
 ) -> Tuple[Optional[List[str]], Optional[str], Optional[str]]:
     """
-    Auto-detect referenced filenames (e.g. *.csv, *.xlsx), sheets, or tabular requests from question text
-    if not explicitly passed.
+    Auto-detect referenced filenames (e.g. *.csv, *.xlsx, *.png, *.jpg), sheets, images,
+    or tabular requests from question text if not explicitly passed.
     """
     target_types = _normalize_file_types(file_type)
     target_fname = (filename or "").strip() or None
     target_sname = (sheet_name or "").strip() or None
 
-    # Auto-detect filename like movies.csv or quarterly_sales.xlsx
+    # Auto-detect filename like movies.csv, quarterly_sales.xlsx, chart.png, 9 (12).png
     if not target_fname:
-        fn_match = re.search(r"\b([\w\-\.]+\.(?:csv|xlsx|xls|pdf|docx|txt|md))\b", question, re.IGNORECASE)
+        fn_match = re.search(
+            r"([\w\-\.\(\) ]+\.(?:csv|xlsx|xls|pdf|docx|txt|md|png|jpg|jpeg|webp|bmp|tiff|pptx|ppt))\b",
+            question,
+            re.IGNORECASE,
+        )
         if fn_match:
             target_fname = fn_match.group(1).strip()
             # If a specific filename was found, infer its file_type if not set
@@ -121,13 +131,32 @@ def _auto_detect_tabular_filters(
                 ext = target_fname.rsplit(".", 1)[-1].lower()
                 target_types = [ext]
 
-    # Auto-detect sheet reference like 'sheet: Q3_Summary' or 'in Sheet1'
+    # Auto-detect sheet reference like 'sheet: Q3_Summary', 'sheet = Sheet1', 'in sheet Sheet1'
     if not target_sname:
-        sheet_match = re.search(r"\b(?:sheet|tab)\s*[:=]?\s*['\"]?([a-zA-Z0-9_\-]+)['\"]?", question, re.IGNORECASE)
+        sheet_match = re.search(
+            r"\b(?:sheet|tab)\b\s*[:=]\s*['\"]?([a-zA-Z0-9_\-]+)['\"]?|\b(?:in|from)\s+sheet\s+['\"]?([a-zA-Z0-9_\-]+)['\"]?",
+            question,
+            re.IGNORECASE,
+        )
         if sheet_match:
-            target_sname = sheet_match.group(1).strip()
+            target_sname = (sheet_match.group(1) or sheet_match.group(2) or "").strip()
             if not target_types:
                 target_types = ["xlsx", "xls"]
+
+    # If searching specifically for images, presentations, or text files, ignore any spurious sheet filters
+    if target_types and not any(t in ("xlsx", "xls") for t in target_types):
+        target_sname = None
+
+    # Auto-detect image / OCR intent if user asks about images, photos, diagrams, screenshots
+    if not target_types:
+        lower_q = question.lower()
+        image_keywords = [
+            "image", "images", "photo", "photos", "picture", "pictures",
+            "screenshot", "screenshots", "diagram", "diagrams", "figure",
+            "ocr", "chart", "graphic", "illustration", "drawing", "visual"
+        ]
+        if any(re.search(rf"\b{re.escape(w)}\b", lower_q) for w in image_keywords):
+            target_types = ["png", "jpg", "jpeg", "webp", "bmp", "tiff"]
 
     # Auto-detect general tabular intent if user mentions csv or spreadsheet keywords
     if not target_types:
@@ -142,6 +171,13 @@ def _auto_detect_tabular_filters(
                 target_types = ["csv"]
             elif any(x in lower_q for x in ["excel", "xlsx", "xls", "sheet"]) and "csv" not in lower_q:
                 target_types = ["xlsx", "xls"]
+
+    # Auto-detect presentation intent
+    if not target_types:
+        lower_q = question.lower()
+        pres_keywords = ["slide", "slides", "presentation", "powerpoint", "deck", "slide deck"]
+        if any(re.search(rf"\b{re.escape(w)}\b", lower_q) for w in pres_keywords):
+            target_types = ["pptx", "ppt"]
 
     return target_types, target_fname, target_sname
 
@@ -266,6 +302,8 @@ def _records_to_documents(records: List[Dict[str, Any]]) -> List[Document]:
             or "Tabular Dataset Overview" in raw_content
             or (is_tabular and chunk_idx == 0)
         )
+        is_image = file_type in IMAGE_EXTENSIONS or "Image" in source or "(Image)" in source
+        is_presentation = file_type in PRESENTATION_EXTENSIONS or "Slide " in source or "Presentation" in source
 
         formatted_content = _format_tabular_chunk_content(raw_content, file_type)
         content = formatted_content[:MAX_CONTENT_CHARS]
@@ -285,6 +323,10 @@ def _records_to_documents(records: List[Dict[str, Any]]) -> List[Document]:
             header_parts.append("[Dataset: Tabular Schema & Overview]")
         elif is_tabular:
             header_parts.append("[Dataset: Tabular Records]")
+        elif is_image:
+            header_parts.append("[Media: Image & OCR Text]")
+        elif is_presentation:
+            header_parts.append("[Media: Slide Presentation]")
 
         if sheet_name:
             header_parts.append(f"[Sheet: {sheet_name}]")
@@ -317,6 +359,8 @@ def _records_to_documents(records: List[Dict[str, Any]]) -> List[Document]:
                     "file_type":           file_type,
                     "is_tabular":          is_tabular,
                     "is_table_summary":    is_schema_overview,
+                    "is_image":            is_image,
+                    "is_presentation":     is_presentation,
                     "sheet_name":          sheet_name,
                     "row_info":            row_info,
                     "upload_date":         upload_date,
@@ -347,7 +391,9 @@ def document_search_tool(
     sheet_name: Optional[str] = None,
 ) -> str:
     """
-    Search through all user-uploaded documents, spreadsheets, and tabular datasets:
+    Search through all user-uploaded documents, spreadsheets, images, and presentations:
+    - Images (.png, .jpg, .jpeg, .webp, .bmp, .tiff) transcribed via Nemotron OCR v2 with extracted text, numbers, labels, layout, and visual metadata
+    - Presentations (.pptx, .ppt) with slide contents, tables, speaker notes, and embedded slide image OCR
     - Excel workbooks (.xlsx, .xls) and multi-sheet spreadsheets
     - CSV data files (.csv) and structured data tables
     - PDF documents (.pdf), Word files (.docx), Text files (.txt), and Markdown (.md)
@@ -355,20 +401,22 @@ def document_search_tool(
     Leverages multi-index hybrid search across vector embeddings, fulltext keyword indexes (content, source, filename, description), and text indexes, extracting rich metadata (sheet names, row indices, table headers, column attributes, and community IDs).
 
     Use this tool whenever:
+    - The user asks about an image, uploaded photo, screenshot, diagram, chart, or visual document (e.g. 'what is in this image?', 'describe the screenshot', 'what can you see?').
+    - An image or file is attached to the chat (e.g. [Attached File(s): ...]).
     - The user asks about content from uploaded files, spreadsheets, tables, CSV rows, or documents.
     - The user asks for specific columns, metrics, aggregations, or records in CSV or Excel datasets (e.g. movies.csv, sales.xlsx).
     - The user references specific documents, sheets, data tables, specs, manuals, project files, or reports.
 
     Args:
-        question: The search query, keyword, column lookup, or question to find matching chunks for.
+        question: The search query, keyword, visual description lookup, or question to find matching chunks for.
         community_ids: Optional list of community IDs to filter the search results by.
-        file_type: Optional filter for file type (e.g. 'csv', 'xlsx', 'excel', 'tabular', 'pdf', 'docx').
-        filename: Optional filename filter (e.g. 'movies.csv', 'sales.xlsx').
+        file_type: Optional filter for file type (e.g. 'image', 'png', 'jpg', 'csv', 'xlsx', 'excel', 'tabular', 'pdf', 'docx', 'pptx').
+        filename: Optional filename filter (e.g. 'chart.png', 'movies.csv', 'sales.xlsx').
         sheet_name: Optional Excel sheet name filter (e.g. 'Sheet1', 'Q3_Financials').
 
     Returns:
-        A formatted string containing the most relevant document passages, tabular rows, and table excerpts with
-        filename, sheet, row, community, and metadata, or a message if no documents match.
+        A formatted string containing the most relevant document passages, OCR image text, tabular rows, and table excerpts with
+        filename, metadata, and extracted content, or a message if no documents match.
     """
     logger.info(
         "document_search_tool invoked: %r (community_ids=%s, file_type=%s, filename=%s, sheet_name=%s)", 
