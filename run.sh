@@ -20,7 +20,8 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 # download reranker model
-# hf download cross-encoder/ms-marco-MiniLM-L-6-v2
+hf download cross-encoder/ms-marco-MiniLM-L-6-v2 || true
+hf download nvidia/nemotron-ocr-v2 || true
 export HF_HUB_OFFLINE=1
 
 cd backend
