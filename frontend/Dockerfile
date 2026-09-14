@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 ARG UV_VERSION=0.7.20
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
