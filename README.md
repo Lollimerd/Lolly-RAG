@@ -60,17 +60,17 @@ flowchart TD
 
 ## 🌟 Key Features
 
-| Feature | Description | Key Tech & Highlights |
-| :--- | :--- | :--- |
-| **🤖 Autonomous Agentic GraphRAG** | Powered by `deepagents` and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge. | LangChain, `deepagents`, Ollama (`qwen3.5:4b`) |
-| **👁️ NVIDIA Nemotron OCR v2** | High-accuracy deep learning OCR pipeline replacing legacy Tesseract. Automatically transcribes text, tables, diagrams, and visual layout from images and scanned PDFs into structured searchable chunks. | `nemotron-ocr-v2`, `torchvision`, `shapely`, GPU-accelerated |
-| **📎 Native In-Chat File Attachments** | Drag-and-drop or select multiple documents/media directly inside the chat bar. Automatically ingests attachments into the knowledge graph under "Chat Uploads" before querying the agent. | Streamlit `st.chat_input(accept_file="multiple")`, SSE status feedback |
-| **📊 Multi-Modal Ingestion Pipeline** | Specialized loaders for diverse formats: Spreadsheets (`.xlsx`, `.xls`), CSV (`.csv` via APOC/chunking), PowerPoint (`.pptx`, `.ppt` with slide/table/notes extraction), PDF (with OCR fallback), Word (`.docx`), Markdown (`.md`), and images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`). | `python-pptx`, `openpyxl`, `pandas`, `pypdf`, `Pillow` |
-| **⚡ Vector + Graph Hybrid Search** | Combines Neo4j vector cosine similarity indexes on `DocumentChunk` nodes with fulltext keyword indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking. | Neo4j Vector Indexes, Fulltext Search, `ms-marco-MiniLM-L-6-v2` |
-| **🔍 Smart Intent Detection** | Search tool automatically detects visual/diagram, presentation/slide, and tabular dataset intent from natural user queries, routing to specialized chunk types (`[Media: Image & OCR Text]`, `[Dataset: Tabular Records]`). | Regex Query Classifier, Metadata Filtering |
-| **📈 Visual Graph Explorer & Analytics** | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit. | PyVis Network Visualizer, Streamlit Analytics |
-| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`). | Neo4j Graph Sessions, Auto-Healing Graph Routines |
-| **🔮 Robust Middleware Pipeline** | Integrated `middleware/in_built.py` handling automatic summarization, tool call limits (3 runs), contextual trimming, and tool retry mechanisms. | Summarization, Context Editing, Tool Call Limits & Retries |
+| Feature                                        | Description                                                                                                                                                                                                                                                                                         | Key Tech & Highlights                                                 |
+| :--------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------- |
+| **🤖 Autonomous Agentic GraphRAG**              | Powered by`deepagents` and LangChain, utilizing hierarchical tool execution protocols to search document knowledge graphs or fallback gracefully to internal model knowledge.                                                                                                                       | LangChain,`deepagents`, Ollama (`qwen3.5:4b`)                         |
+| **👁️ NVIDIA Nemotron OCR v2**                   | High-accuracy deep learning OCR pipeline replacing legacy Tesseract. Automatically transcribes text, tables, diagrams, and visual layout from images and scanned PDFs into structured searchable chunks.                                                                                            | `nemotron-ocr-v2`, `torchvision`, `shapely`, GPU-accelerated          |
+| **📎 Native In-Chat File Attachments**          | Drag-and-drop or select multiple documents/media directly inside the chat bar. Automatically ingests attachments into the knowledge graph under "Chat Uploads" before querying the agent.                                                                                                           | Streamlit`st.chat_input(accept_file="multiple")`, SSE status feedback |
+| **📊 Multi-Modal Ingestion Pipeline**           | Specialized loaders for diverse formats: Spreadsheets (`.xlsx`, `.xls`), CSV (`.csv` via APOC/chunking), PowerPoint (`.pptx`, `.ppt` with slide/table/notes extraction), PDF (with OCR fallback), Word (`.docx`), Markdown (`.md`), and images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`). | `python-pptx`, `openpyxl`, `pandas`, `pypdf`, `Pillow`                |
+| **⚡ Vector + Graph Hybrid Search**             | Combines Neo4j vector cosine similarity indexes on`DocumentChunk` nodes with fulltext keyword indexes, metadata matching, and GPU-accelerated Cross-Encoder reranking.                                                                                                                              | Neo4j Vector Indexes, Fulltext Search,`ms-marco-MiniLM-L-6-v2`        |
+| **🔍 Smart Intent Detection**                   | Search tool automatically detects visual/diagram, presentation/slide, and tabular dataset intent from natural user queries, routing to specialized chunk types (`[Media: Image & OCR Text]`, `[Dataset: Tabular Records]`).                                                                         | Regex Query Classifier, Metadata Filtering                            |
+| **📈 Visual Graph Explorer & Analytics**        | Interactive PyVis network visualizers, database summaries, entity count distribution metrics, and graph sampling directly in Streamlit.                                                                                                                                                             | PyVis Network Visualizer, Streamlit Analytics                         |
+| **🧠 Persistent Graph Memory & Session Repair** | Chat history and user sessions are stored directly in Neo4j graph nodes. Startup routines automatically repair missing session relationships (`HAS_MESSAGE`).                                                                                                                                       | Neo4j Graph Sessions, Auto-Healing Graph Routines                     |
+| **🔮 Robust Middleware Pipeline**               | Integrated`middleware/in_built.py` handling automatic summarization, tool call limits (3 runs), contextual trimming, and tool retry mechanisms.                                                                                                                                                     | Summarization, Context Editing, Tool Call Limits & Retries            |
 
 ---
 
@@ -255,17 +255,87 @@ Service Ports:
 
 ---
 
+### 4. Air-Gapped Deployment (No Internet Access)
+
+This section covers deploying Lolly RAG in an environment with **no outbound internet access** — air-gapped machines, secure networks, or offline labs.
+
+Both bare-metal and Docker modes are fully supported offline.
+
+#### Phase 1: One-Time Preparation (on connected machine)
+
+Run the automated preparation script on a machine with internet access:
+
+```bash
+chmod +x setup-airgap.sh
+
+# Docker mode (default — fast, no host wheel downloads):
+./setup-airgap.sh
+
+# Or for bare-metal host deployment (downloads host Python wheels):
+./setup-airgap.sh --bare-metal
+
+# Or prepare both:
+./setup-airgap.sh --all
+```
+
+This generates and packages:
+
+| Artifact              | Location                              | Purpose                                                 |
+| --------------------- | ------------------------------------- | ------------------------------------------------------- |
+| Docker image tarballs | `docker-images/`                      | Offline`docker load` (Backend, Frontend, Neo4j, Ollama) |
+| HuggingFace models    | `.cache/huggingface/`                 | Reranker + Nemotron OCR offline weights                 |
+| Ollama model blobs    | `ollama-models/models/`               | Direct bind-mounted offline model files                 |
+| Python wheels (opt.)  | `wheels/backend/`, `wheels/frontend/` | Bare-metal host`pip install` only                       |
+
+#### Phase 2: Transfer to Air-Gapped Machine
+
+Simply copy the **entire project directory** to the target air-gapped machine (via external SSD, USB, or scp/rsync). Everything needed is now self-contained inside the repository directory!
+
+#### Phase 3a: Run with Docker (Offline)
+
+On the air-gapped machine, run the **1-command launcher**:
+
+```bash
+chmod +x run-airgap-docker.sh
+./run-airgap-docker.sh
+```
+
+This script:
+
+1. Automatically loads any unpacked Docker images from `docker-images/*.tar`.
+2. Generates `.env` from `.env.example` if not present.
+3. Starts the stack via `docker compose up -d`.
+
+**Unified Architecture**:
+- All images are pre-built and pre-loaded (`pull_policy: missing`).
+- Ollama automatically reads model files from `./ollama-models/models` via direct bind mount.
+- Backend runs with `HF_HUB_OFFLINE=1` using `./.cache/huggingface`.
+- No secondary override file needed — `docker-compose.yml` handles both online and offline deployments.
+
+#### Phase 3b: Run Bare-Metal (Offline)
+
+If running directly on the host machine without Docker:
+
+```bash
+# 1. Configure environment
+cp .env.example .env
+nano .env  # set NEO4J_URL, OLLAMA_BASE_URL, HF_HOME, HF_HUB_OFFLINE=1
+
+# 2. Launch local services
+./run.sh
+```
+
 ## 🛠 Model Configuration
 
 Model definitions, OCR pipelines, and LLM parameters are managed in [`backend/setup/init_config.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/setup/init_config.py):
 
-| Role | Default Model / Class | Function |
-| :--- | :--- | :--- |
-| **Answer LLM** | `qwen3.5:4b` | Agent reasoning, tool orchestration & answer generation |
-| **Embedding Model** | `jina-embeddings-v2-base-en` | 768-dimensional vector embeddings for Neo4j Vector Indexes |
-| **Reranker Model** | `cross-encoder/ms-marco-MiniLM-L-6-v2` | PyTorch GPU cross-encoder candidate re-scoring |
-| **OCR Engine** | `nvidia/nemotron-ocr-v2` | Deep learning OCR, layout segmentation & visual text extraction |
-| **Summarizer LLM** | `qwen3.5:0.8b` | Historical chat context condensation & token management |
+| Role                | Default Model / Class                  | Function                                                        |
+| :------------------ | :------------------------------------- | :-------------------------------------------------------------- |
+| **Answer LLM**      | `qwen3.5:4b`                           | Agent reasoning, tool orchestration & answer generation         |
+| **Embedding Model** | `jina-embeddings-v2-base-en`           | 768-dimensional vector embeddings for Neo4j Vector Indexes      |
+| **Reranker Model**  | `cross-encoder/ms-marco-MiniLM-L-6-v2` | PyTorch GPU cross-encoder candidate re-scoring                  |
+| **OCR Engine**      | `nvidia/nemotron-ocr-v2`               | Deep learning OCR, layout segmentation & visual text extraction |
+| **Summarizer LLM**  | `qwen3.5:0.8b`                         | Historical chat context condensation & token management         |
 
 ---
 

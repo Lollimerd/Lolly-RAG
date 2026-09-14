@@ -66,12 +66,33 @@ def get_embedding_dimension() -> int:
 
 @lru_cache(maxsize=1)
 def reranker_model():
-    """reranker model"""
+    """reranker model with offline / air-gap snapshot detection."""
     import torch
+    from pathlib import Path
+
+    model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+    # In air-gapped / offline deployments, search for a cached snapshot containing config.json
+    hf_home = os.getenv("HF_HOME") or "/home/appuser/.cache/huggingface"
+    candidate_cache_dirs = [
+        Path(hf_home) / "hub" / "models--cross-encoder--ms-marco-MiniLM-L-6-v2" / "snapshots",
+        Path(__file__).resolve().parent.parent.parent / ".cache" / "huggingface" / "hub" / "models--cross-encoder--ms-marco-MiniLM-L-6-v2" / "snapshots",
+    ]
+    for snapshots_dir in candidate_cache_dirs:
+        if snapshots_dir.is_dir():
+            for snap in sorted(snapshots_dir.iterdir(), reverse=True):
+                if snap.is_dir() and (snap / "config.json").exists():
+                    model_name = str(snap)
+                    logger.info("Found local offline snapshot for CrossEncoder at %s", model_name)
+                    break
+            if model_name != "cross-encoder/ms-marco-MiniLM-L-6-v2":
+                break
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     return HuggingFaceCrossEncoder(
-        model_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_name=model_name,
         model_kwargs={
-            "device": "cuda",  # Use 'cuda' for GPU acceleration
+            "device": device,
         },
     )
 
@@ -119,6 +140,19 @@ class NemotronOCRWrapper:
                     "nemotron-ocr package is not installed. Please install it with: "
                     "`uv pip install nemotron-ocr` or `pip install nemotron-ocr`"
                 ) from err
+
+            # Ensure TORCH_HOME points to our mounted or local torch cache directory
+            if not os.getenv("TORCH_HOME"):
+                candidate_paths = [
+                    "/home/appuser/.cache/torch",
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.cache/torch")),
+                    os.path.expanduser("~/.cache/torch"),
+                ]
+                for p in candidate_paths:
+                    if os.path.isdir(p):
+                        os.environ["TORCH_HOME"] = p
+                        logger.info("Auto-configured TORCH_HOME to %s", p)
+                        break
 
             logger.info("Initializing NemotronOCRV2 pipeline (lang=%s, merge_level=%s)...", self.lang, self.merge_level)
             kwargs: Dict[str, Any] = {"model_dir": self.model_dir} if self.model_dir else {"lang": self.lang}
@@ -191,13 +225,17 @@ def get_graph_instance() -> Neo4jGraph:
     """Get or create a reusable Neo4j graph instance (connection pooling)."""
     global _graph_instance
     if _graph_instance is None:
-        _graph_instance = Neo4jGraph(
-            url=NEO4J_URL, 
-            username=NEO4J_USERNAME, 
-            password=NEO4J_PASSWORD,
-            enhanced_schema=True,
-            refresh_schema=True
-        )
+        try:
+            _graph_instance = Neo4jGraph(
+                url=NEO4J_URL, 
+                username=NEO4J_USERNAME, 
+                password=NEO4J_PASSWORD,
+                enhanced_schema=False,
+                refresh_schema=False
+            )
+        except Exception as e:
+            logger.error(f"Failed to connect to Neo4j at {NEO4J_URL}: {e}")
+            raise
     return _graph_instance
 
 # print(get_graph_instance().schema)
