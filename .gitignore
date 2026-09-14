@@ -3,12 +3,29 @@ __pycache__/
 *.py[oc]
 build/
 dist/
-wheels/
 *.egg-info
 
 # Virtual environments
 .venv
 .env
+
+# ── Air-gap wheel cache ────────────────────────────────────────────────────────
+# Track directory structure (.gitkeep) but ignore actual wheel binaries
+wheels/**/*.whl
+wheels/**/*.tar.gz
+# Ignore compiled extensions too
+wheels/**/*.so
+wheels/**/*.pyd
+
+# ── Air-gap large binary artefacts ────────────────────────────────────────────
+# Docker image tarballs (multi-GB, transfer via setup-airgap.sh)
+docker-images/
+# Ollama model export directory
+ollama-models/
+# Local HuggingFace cache
+.cache/
+# Neo4j plugin JARs — NOT ignored (small, safe to commit if desired)
+# neo4j-plugins/
 
 .tmp/
 scratch/
