@@ -1,5 +1,19 @@
 name: lolly-rag
 
+# =============================================================================
+# Lolly RAG — Unified Docker Compose Configuration
+#
+# Works for BOTH online development and offline air-gapped deployments:
+#
+#   Online:   docker compose up --build -d
+#   Air-gap:  docker compose up -d
+#
+# For air-gap mode, pre-load images via: ./run-airgap-docker.sh (or docker load)
+# Models are automatically loaded from local bind mounts:
+#   • ./ollama-models/models → /root/.ollama/models
+#   • ./.cache/huggingface   → /home/appuser/.cache/huggingface
+# =============================================================================
+
 services:
   local-AI:
     image: ollama/ollama:0.32.1
@@ -13,7 +27,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [ gpu, compute, utility ]
-    pull_policy: missing
     environment:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_KV_CACHE_TYPE=q4_0
@@ -24,6 +37,7 @@ services:
       - OLLAMA_MAX_QUEUE=512
     volumes:
       - ollama_data:/root/.ollama
+      - ${OLLAMA_MODELS_PATH:-./ollama-models/models}:/root/.ollama/models
     restart: unless-stopped
     networks:
       - lolly-rag
@@ -36,7 +50,6 @@ services:
   graphDB:
     container_name: lolly-DB
     image: neo4j:5.26
-    pull_policy: missing
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -46,12 +59,6 @@ services:
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
       - NEO4J_server_jvm_additional=--add-modules=jdk.incubator.vector
-      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
-      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
-      - NEO4J_apoc_export_file_enabled=true
-      - NEO4J_apoc_import_file_enabled=true
-      - NEO4J_apoc_import_file_use__neo4j__config=true
       - NEO4J_dbms_usage_report.enabled=false
     restart: unless-stopped
     networks:
@@ -63,6 +70,7 @@ services:
       retries: 10
 
   backend-server:
+    image: lolly-rag-backend:latest
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -77,12 +85,11 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - OLLAMA_BASE_URL=http://localAI:11434
-      - MAX_EMBED_WORKERS=${workers}
-      # set 0 to allow downloading Nemotron checkpoints on first run
+      - MAX_EMBED_WORKERS=${workers:-8}
       - HF_HUB_OFFLINE=1
       - HF_HOME=/home/appuser/.cache/huggingface
     volumes:
-      - /home/lolli/.cache/huggingface:/home/appuser/.cache/huggingface
+      - ${HF_HOST_CACHE:-./.cache/huggingface}:/home/appuser/.cache/huggingface
     networks:
       - lolly-rag
     logging:
@@ -104,6 +111,7 @@ services:
         condition: service_healthy
 
   frontend:
+    image: lolly-rag-frontend:latest
     build:
       context: .
       dockerfile: frontend/Dockerfile

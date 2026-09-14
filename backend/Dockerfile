@@ -1,8 +1,11 @@
 # syntax=docker/dockerfile:1
 
+ARG UV_VERSION=0.7.20
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv-bin
+
 FROM python:3.12-slim
 
-# Environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH="/app/backend:/app" \
@@ -12,8 +15,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Copy uv binary for fast, reliable dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Copy uv binary from the pinned intermediate stage
+COPY --from=uv-bin /uv /uvx /bin/
 
 # Create a non-privileged user matching host UID for shared volume permissions
 ARG UID=1000
@@ -28,9 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies into system Python environment using uv cache mount
+# Install Python dependencies
+COPY backend/requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=backend/requirements.txt,target=/tmp/requirements.txt \
     uv pip install --system -r /tmp/requirements.txt
 
 # Create cache directories and set permissions
