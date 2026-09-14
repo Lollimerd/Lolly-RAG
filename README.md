@@ -321,8 +321,8 @@ If running directly on the host machine without Docker:
 cp .env.example .env
 nano .env  # set NEO4J_URL, OLLAMA_BASE_URL, HF_HOME, HF_HUB_OFFLINE=1
 
-# 2. Launch (offline flag skips HuggingFace downloads)
-./run.sh --offline
+# 2. Launch local services
+./run.sh
 ```
 
 ## 🛠 Model Configuration
