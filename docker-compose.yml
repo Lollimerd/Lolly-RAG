@@ -58,6 +58,9 @@ services:
       - lolly-rag_logs:/logs
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
       - NEO4J_server_jvm_additional=--add-modules=jdk.incubator.vector
       - NEO4J_dbms_usage_report.enabled=false
     restart: unless-stopped
@@ -87,9 +90,12 @@ services:
       - OLLAMA_BASE_URL=http://localAI:11434
       - MAX_EMBED_WORKERS=${workers:-8}
       - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
       - HF_HOME=/home/appuser/.cache/huggingface
+      - TORCH_HOME=/home/appuser/.cache/torch
     volumes:
       - ${HF_HOST_CACHE:-./.cache/huggingface}:/home/appuser/.cache/huggingface
+      - ${TORCH_HOST_CACHE:-./.cache/torch}:/home/appuser/.cache/torch
     networks:
       - lolly-rag
     logging:
