@@ -16,24 +16,19 @@ name: lolly-rag
 
 services:
   local-AI:
-    image: ollama/ollama:0.32.1
+    image: ollama/ollama:0.33.2
     container_name: localAI
     ports:
       - "11434:11434"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [ gpu, compute, utility ]
+    deploy: {}
+    gpus: all
     environment:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_KV_CACHE_TYPE=q4_0
       - OLLAMA_DEBUG=0
       - OLLAMA_MAX_LOADED_MODELS=3
       - OLLAMA_KEEP_ALIVE=5m
-      - OLLAMA_NUM_PARALLEL=${workers}
+      - OLLAMA_NUM_PARALLEL=${MAX_EMBED_WORKERS:-8}
       - OLLAMA_MAX_QUEUE=512
     volumes:
       - ollama_data:/root/.ollama
@@ -58,9 +53,9 @@ services:
       - lolly-rag_logs:/logs
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
-      - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
       - NEO4J_server_jvm_additional=--add-modules=jdk.incubator.vector
       - NEO4J_dbms_usage_report.enabled=false
     restart: unless-stopped
@@ -80,6 +75,8 @@ services:
     group_add:
       - "1001" # Your host's docker group GID
     container_name: fastapi-server
+    deploy: {}
+    gpus: all
     restart: unless-stopped
     ports:
       - 8000:8000
@@ -103,13 +100,6 @@ services:
       options:
         max-size: "2m"
         max-file: "2"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [ gpu, compute, utility ]
     depends_on:
       graphDB:
         condition: service_healthy
