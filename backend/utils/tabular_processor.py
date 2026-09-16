@@ -28,13 +28,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_TABULAR_ROWS_PER_CHUNK = 20  # Manageable record count for semantic dense embeddings
-DEFAULT_TABULAR_ROW_OVERLAP = 2     # Sliding overlap between consecutive chunks
-MAX_TABULAR_CHARS_PER_CHUNK = 2500  # Soft character limit for tabular chunks
-EMBED_BATCH_SIZE = 32  # Micro-batch size per embedding API call
-WRITE_BATCH_SIZE = 50  # Chunks per Neo4j transaction
+DEFAULT_TABULAR_ROWS_PER_CHUNK = 20   # Manageable record count for semantic dense embeddings
+DEFAULT_TABULAR_ROW_OVERLAP = 2      # Sliding overlap between consecutive chunks
+MAX_TABULAR_CHARS_PER_CHUNK = 2500   # Soft character limit for tabular chunks
+EMBED_BATCH_SIZE = 32                # Micro-batch size per embedding API call
+WRITE_BATCH_SIZE = 50                # Chunks per Neo4j transaction
 
 TABULAR_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+_CSV_ENCODINGS = ["utf-8", "utf-8-sig", "latin1", "cp1252", "iso-8859-1"]
 
 # ---------------------------------------------------------------------------
 # Cypher Queries for Tabular & APOC Ingestion
@@ -95,6 +96,20 @@ CALL apoc.periodic.iterate(
 YIELD batches, total, errorMessages
 RETURN batches, total, errorMessages
 """
+
+
+# ---------------------------------------------------------------------------
+# Shared Helpers
+# ---------------------------------------------------------------------------
+
+def _decode_bytes(data: bytes) -> str:
+    """Decode raw bytes trying common encodings, falling back to UTF-8 with replacement."""
+    for enc in _CSV_ENCODINGS:
+        try:
+            return data.decode(enc)
+        except Exception:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +334,6 @@ def _dataframe_to_chunks(
 
         row_start_1indexed = start_idx + 1
         row_end_1indexed = end_idx
-
-        sheet_desc = f" (Sheet: {sheet_name})" if sheet_name else ""
         source_label = (
             f"{filename} (Sheet: {sheet_name}, Rows {row_start_1indexed}-{row_end_1indexed})"
             if sheet_name
@@ -363,16 +376,13 @@ def _dataframe_to_chunks(
 
 def _load_csv(file_path: str, filename: str) -> List[Document]:
     """Load a CSV file into structured Document chunks using Pandas with encoding fallbacks."""
-    encodings_to_try = ["utf-8", "utf-8-sig", "latin1", "cp1252", "iso-8859-1"]
     last_err: Optional[Exception] = None
-
-    for enc in encodings_to_try:
+    for enc in _CSV_ENCODINGS:
         try:
             df = pd.read_csv(file_path, encoding=enc, low_memory=False)
             return _dataframe_to_chunks(df, filename=filename)
         except Exception as e:
             last_err = e
-
     raise ValueError(f"Could not parse CSV file '{filename}': {last_err}")
 
 
@@ -472,15 +482,7 @@ def ingest_csv_with_apoc(
     )
 
     # 2. Decode CSV bytes safely
-    text = None
-    for enc in ["utf-8", "utf-8-sig", "latin1", "cp1252"]:
-        try:
-            text = file_bytes.decode(enc)
-            break
-        except Exception:
-            continue
-    if text is None:
-        text = file_bytes.decode("utf-8", errors="replace")
+    text = _decode_bytes(file_bytes)
 
     reader = csv.DictReader(io.StringIO(text))
     rows = [

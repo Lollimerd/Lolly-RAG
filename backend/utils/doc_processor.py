@@ -50,9 +50,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
 DEFAULT_CHUNK_SEPARATOR = "\n"
-EMBED_BATCH_SIZE = 32  # Micro-batch size per embedding API call
+EMBED_BATCH_SIZE = 32    # Micro-batch size per embedding API call
 MAX_EMBED_WORKERS = int(os.getenv("MAX_EMBED_WORKERS", "4"))  # Concurrency worker threads
-WRITE_BATCH_SIZE = 50  # Chunks per Neo4j transaction
+WRITE_BATCH_SIZE = 50    # Chunks per Neo4j transaction
+DEFAULT_TEMP_DIR = "/tmp/lolly_rag_uploads"
 
 # Combined supported file extensions
 SUPPORTED_EXTENSIONS = set.union(TEXT_EXTENSIONS, TABULAR_EXTENSIONS, MEDIA_EXTENSIONS)
@@ -393,7 +394,7 @@ def process_uploaded_file(
     description: str,
     graph: Any,
     embedder: Any,
-    temp_dir: str = "/tmp/lolly_rag_uploads",
+    temp_dir: str = DEFAULT_TEMP_DIR,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     force: bool = False,
