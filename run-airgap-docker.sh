@@ -91,7 +91,7 @@ fi
 
 # ── 2. Load Docker images if not already loaded ──────────────────────────────
 REQUIRED_IMAGES=(
-    "ollama/ollama:0.32.1"
+    "ollama/ollama:0.33.2"
     "neo4j:5.26"
     "lolly-rag-backend:latest"
     "lolly-rag-frontend:latest"

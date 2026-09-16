@@ -32,7 +32,7 @@ def answer_LLM():
         model="qwen3.5:4b",
         base_url=OLLAMA_BASE_URL,
         num_ctx=40968,
-        num_predict=8192,  # max tokens in answer
+        num_predict=4096,  # max tokens in answer
         temperature=0.7,  # balanced creativity
         repeat_penalty=1.1,  # standard mild penalty
         repeat_last_n=64,  # look back 64 tokens (-1 penalized entire 40k context)
@@ -65,35 +65,14 @@ def get_embedding_dimension() -> int:
         return 1024
 
 @lru_cache(maxsize=1)
-def reranker_model():
-    """reranker model with offline / air-gap snapshot detection."""
+def reranker_model() -> HuggingFaceCrossEncoder:
+    """Load the cross-encoder reranker."""
     import torch
-    from pathlib import Path
-
-    model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-    # In air-gapped / offline deployments, search for a cached snapshot containing config.json
-    hf_home = os.getenv("HF_HOME") or "/home/appuser/.cache/huggingface"
-    candidate_cache_dirs = [
-        Path(hf_home) / "hub" / "models--cross-encoder--ms-marco-MiniLM-L-6-v2" / "snapshots",
-        Path(__file__).resolve().parent.parent.parent / ".cache" / "huggingface" / "hub" / "models--cross-encoder--ms-marco-MiniLM-L-6-v2" / "snapshots",
-    ]
-    for snapshots_dir in candidate_cache_dirs:
-        if snapshots_dir.is_dir():
-            for snap in sorted(snapshots_dir.iterdir(), reverse=True):
-                if snap.is_dir() and (snap / "config.json").exists():
-                    model_name = str(snap)
-                    logger.info("Found local offline snapshot for CrossEncoder at %s", model_name)
-                    break
-            if model_name != "cross-encoder/ms-marco-MiniLM-L-6-v2":
-                break
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     return HuggingFaceCrossEncoder(
-        model_name=model_name,
-        model_kwargs={
-            "device": device,
-        },
+        model_name="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_kwargs={"device": device},
     )
 
 
@@ -141,20 +120,10 @@ class NemotronOCRWrapper:
                     "`uv pip install nemotron-ocr` or `pip install nemotron-ocr`"
                 ) from err
 
-            # Ensure TORCH_HOME points to our mounted or local torch cache directory
-            if not os.getenv("TORCH_HOME"):
-                candidate_paths = [
-                    "/home/appuser/.cache/torch",
-                    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.cache/torch")),
-                    os.path.expanduser("~/.cache/torch"),
-                ]
-                for p in candidate_paths:
-                    if os.path.isdir(p):
-                        os.environ["TORCH_HOME"] = p
-                        logger.info("Auto-configured TORCH_HOME to %s", p)
-                        break
-
-            logger.info("Initializing NemotronOCRV2 pipeline (lang=%s, merge_level=%s)...", self.lang, self.merge_level)
+            logger.info(
+                "Initializing NemotronOCRV2 pipeline (lang=%s, merge_level=%s)...",
+                self.lang, self.merge_level,
+            )
             kwargs: Dict[str, Any] = {"model_dir": self.model_dir} if self.model_dir else {"lang": self.lang}
             if self.detector_only:
                 kwargs["detector_only"] = True

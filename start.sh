@@ -19,6 +19,8 @@ err()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+
 # ── Load environment ─────────────────────────────────────────────────────────
 if [ -f ".env" ]; then
     export $(grep -v '^#' .env | xargs -d '\n' 2>/dev/null) || true

@@ -111,98 +111,75 @@ lolly-rag/
 │   └── requirements.txt
 ├── docker-compose.yml             # Full-stack composition (Ollama, Neo4j, Backend, Frontend)
 ├── pyproject.toml                 # Project dependencies & Python >=3.12 requirement
-├── run.sh                         # Launch script with model caching (Reranker + Nemotron OCR)
+├── start.sh                       # Local development launcher (FastAPI + Streamlit via .venv)
 └── .env.example                   # Environment configuration template
 ```
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Setup & Getting Started
 
-### 1. Prerequisites
+Choose the setup mode that best fits your workflow:
 
-* **Python 3.12+** (required for PyTorch, torchvision, and Nemotron OCR v2 compatibility)
-* [**uv**](https://docs.astral.sh/uv/) (recommended fast Python package manager)
-* **Docker & Docker Compose** (for running Neo4j and optional containerized services)
-* **Ollama** running locally or via Docker
-* **NVIDIA GPU** with CUDA support (recommended for optimal Nemotron OCR & Cross-Encoder inference)
+| Setup Mode                                                       | Best For                                   | Prerequisites                     | Key Command                                    |
+| :--------------------------------------------------------------- | :----------------------------------------- | :-------------------------------- | :--------------------------------------------- |
+| [**1. Docker Compose**](#1-docker-compose-quickest)              | Quickest complete stack deployment         | Docker & NVIDIA Container Toolkit | `docker compose up --build -d`                 |
+| [**2. Local Bare-Metal**](#2-local-bare-metal-development)       | Rapid local iteration & active development | Python 3.12+, `uv`, local GPU     | `./start.sh`                                   |
+| [**3. Air-Gapped / Offline**](#3-air-gapped--offline-deployment) | Environments without internet access       | Docker or `.venv` bundle          | `./setup-airgap.sh` → `./run-airgap-docker.sh` |
 
 ---
 
-### 2. Local Setup with `uv` (Recommended)
+### 1. Docker Compose (Quickest)
 
-#### Step 1: Install `uv`
+Spins up all services (**FastAPI backend**, **Streamlit frontend**, **Neo4j 5.26**, and **Ollama**) in containers with GPU support:
 
 ```bash
-# macOS / Linux
+# 1. Clone repository & configure environment
+git clone <repository-url>
+cd Lolly-RAG
+cp .env.example .env
+
+# 2. Build and launch all services in background
+docker compose up --build -d
+```
+
+**Service Endpoints:**
+* 🎨 **Streamlit Web UI**: [http://localhost:8501](http://localhost:8501) (or `http://localhost:8511`)
+* ⚡ **FastAPI Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+* 🗄️ **Neo4j Browser**: [http://localhost:7474](http://localhost:7474) *(Credentials: `neo4j` / `password`)*
+* 🦙 **Ollama API**: [http://localhost:11434](http://localhost:11434)
+
+---
+
+### 2. Local Bare-Metal Development
+
+Run services directly on the host using [`uv`](https://docs.astral.sh/uv/) for fast virtual environment and package management.
+
+#### Step 1: Environment & Virtualenv
+```bash
+# Install uv (if not already installed)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Windows
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-#### Step 2: Clone and Sync Environment
-
-```bash
+# Clone & enter directory
 git clone <repository-url>
-cd lolly-rag
+cd Lolly-RAG
 
-# Create virtual environment with Python 3.12
-uv venv --python 3.12
-
-# Activate virtual environment
-source .venv/bin/activate       # On Windows: .venv\Scripts\activate
-
-# Install and sync dependencies from uv.lock / pyproject.toml
+# Create virtual environment & sync dependencies
+uv venv --python 3.12 .venv
 uv sync
-```
 
-#### Step 3: Configure Environment Variables
-
-Copy `.env.example` to `.env` and verify database, Ollama, and worker settings:
-
-```bash
+# Configure environment variables
 cp .env.example .env
 ```
 
-Configuration reference:
-
-```env
-# Database Credentials
-NEO4J_URL="bolt://localhost:7687"
-NEO4J_USERNAME="neo4j"
-NEO4J_PASSWORD="password"
-
-# Ollama Endpoint & Embeddings
-OLLAMA_BASE_URL="http://localhost:11434"
-EMBEDDING_MODEL="jina/jina-embeddings-v2-base-en:latest"
-
-# Worker Concurrency
-workers=4
-
-# Backend Service URL
-BACKEND_URL="http://localhost:8000"
-
-# HuggingFace & Nemotron OCR (Set to 0 on initial boot to download weights, then 1)
-HF_HUB_OFFLINE=1
-HF_HOME="/home/appuser/.cache/huggingface"
-```
-
-#### Step 4: Pull Required Ollama Models
-
-Ensure Ollama is running and download the models:
-
+#### Step 2: Start External Services (Ollama & Neo4j)
 ```bash
+# Pull required Ollama models
 ollama pull qwen3.5:4b
-ollama pull jina/jina-embeddings-v2-base-en:latest
 ollama pull qwen3.5:0.8b
-```
+ollama pull qwen3-embedding:0.6b
 
-#### Step 5: Start Neo4j
-
-Start a local Neo4j database container with APOC plugin enabled:
-
-```bash
+# Run Neo4j with APOC plugin enabled
 docker run -d \
   --name lolly-neo4j \
   -p 7474:7474 -p 7687:7687 \
@@ -211,168 +188,87 @@ docker run -d \
   neo4j:5.26
 ```
 
-#### Step 6: Launch Applications
-
-**Option A: Unified Launch Script (Pre-downloads HuggingFace models & boots both services)**
-
+#### Step 3: Launch Local Services
 ```bash
-chmod +x run.sh
-./run.sh
+chmod +x start.sh
+./start.sh
 ```
-
-**Option B: Manual / `uv run` Launch**
-
-```bash
-# Terminal 1: FastAPI Backend
-cd backend && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Terminal 2: Streamlit Frontend
-cd frontend && uv run streamlit run web_ui.py --server.address 0.0.0.0
-```
-
-Access the interfaces:
-
-* **Streamlit Web UI**: `http://localhost:8501`
-* **FastAPI Docs**: `http://localhost:8000/docs`
-* **Neo4j Browser**: `http://localhost:7474`
+*`./start.sh` automatically activates `.venv` and concurrently launches FastAPI (port 8000) and Streamlit (port 8501). Press `Ctrl+C` to gracefully stop both.*
 
 ---
 
-### 3. Alternative: Run with Docker Compose
+### 3. Air-Gapped / Offline Deployment
 
-To spin up all services (Neo4j, Ollama, FastAPI backend, and Streamlit frontend) in containers:
+Deploy Lolly RAG into secure environments with **no outbound internet access**.
 
-```bash
-docker compose up --build -d
-```
-
-Service Ports:
-
-* **Streamlit Frontend**: `http://localhost:8511` (or `8501` if configured)
-* **FastAPI Backend**: `http://localhost:8000`
-* **Neo4j Browser**: `http://localhost:7474`
-* **Ollama API**: `http://localhost:11434`
-
----
-
-### 4. Air-Gapped Deployment (No Internet Access)
-
-This section covers deploying Lolly RAG in an environment with **no outbound internet access** — air-gapped machines, secure networks, or offline labs.
-
-Both bare-metal and Docker modes are fully supported offline.
-
-#### Phase 1: One-Time Preparation (on connected machine)
-
-Run the automated preparation script on a machine with internet access:
+#### Phase 1: Preparation (Online Machine)
+Run the automated preparation script on an internet-connected machine:
 
 ```bash
 chmod +x setup-airgap.sh
 
-# Docker mode (default — fast, no host wheel downloads):
+# Option A: Prepare for Docker deployment (default — fast)
 ./setup-airgap.sh
 
-# Or for bare-metal host deployment (downloads host Python wheels):
+# Option B: Prepare for bare-metal host deployment (syncs .venv via uv)
 ./setup-airgap.sh --bare-metal
 
-# Or prepare both:
+# Option C: Prepare both Docker & bare-metal artifacts
 ./setup-airgap.sh --all
+
+# Optional: Verify all offline artifacts locally
+./setup-airgap.sh --verify
 ```
 
-This generates and packages:
+**Self-Contained Artifacts Generated:**
 
-| Artifact              | Location                              | Purpose                                                 |
-| --------------------- | ------------------------------------- | ------------------------------------------------------- |
-| Docker image tarballs | `docker-images/`                      | Offline`docker load` (Backend, Frontend, Neo4j, Ollama) |
-| HuggingFace models    | `.cache/huggingface/`                 | Reranker + Nemotron OCR offline weights                 |
-| Ollama model blobs    | `ollama-models/models/`               | Direct bind-mounted offline model files                 |
-| Python wheels (opt.)  | `wheels/backend/`, `wheels/frontend/` | Bare-metal host`pip install` only                       |
+| Artifact                | Local Location          | Purpose                                                   |
+| :---------------------- | :---------------------- | :-------------------------------------------------------- |
+| **Docker Images**       | `docker-images/*.tar`   | Pre-saved images for Backend, Frontend, Neo4j, Ollama     |
+| **Ollama Models**       | `ollama-models/models/` | Direct bind-mounted model blobs & manifests               |
+| **Hugging Face Models** | `.cache/huggingface/`   | Offline weights for Cross-Encoder & Nemotron OCR v2       |
+| **PyTorch Backbone**    | `.cache/torch/`         | RegNet backbone weights for Nemotron OCR layout detection |
+| **Python Virtualenv**   | `.venv/`                | Fully synced Python 3.12 virtual environment (bare-metal) |
 
 #### Phase 2: Transfer to Air-Gapped Machine
-
-Simply copy the **entire project directory** to the target air-gapped machine (via external SSD, USB, or scp/rsync). Everything needed is now self-contained inside the repository directory!
-
-#### Phase 3a: Run with Docker (Offline)
-
-On the air-gapped machine, run the **1-command launcher**:
+Copy the **entire repository directory** to the target air-gapped machine via external SSD, USB, or secure scp/rsync:
 
 ```bash
-chmod +x run-airgap-docker.sh
-./run-airgap-docker.sh
+rsync -avP Lolly-RAG/ user@airgap-machine:/home/user/Lolly-RAG/
 ```
 
-This script:
+#### Phase 3: Launch Offline Stack
+On the target air-gapped machine:
 
-1. Automatically loads any unpacked Docker images from `docker-images/*.tar`.
-2. Generates `.env` from `.env.example` if not present.
-3. Starts the stack via `docker compose up -d`.
+* **Docker Mode (1-Command Launcher)**:
+  ```bash
+  chmod +x run-airgap-docker.sh
+  ./run-airgap-docker.sh
+  ```
+  *(Automatically loads `docker-images/*.tar`, configures `.env`, and starts the complete containerized stack via `docker compose up -d`)*
 
-**Unified Architecture**:
-- All images are pre-built and pre-loaded (`pull_policy: missing`).
-- Ollama automatically reads model files from `./ollama-models/models` via direct bind mount.
-- Backend runs with `HF_HUB_OFFLINE=1` using `./.cache/huggingface`.
-- No secondary override file needed — `docker-compose.yml` handles both online and offline deployments.
+* **Bare-Metal Mode**:
+  ```bash
+  # 1. Configure environment
+  cp .env.example .env
 
-#### Phase 3b: Run Bare-Metal (Offline)
+  # 2. Ensure host Neo4j and Ollama services are running, then launch:
+  ./start.sh
+  ```
 
-If running directly on the host machine without Docker:
-
-```bash
-# 1. Configure environment
-cp .env.example .env
-nano .env  # set NEO4J_URL, OLLAMA_BASE_URL, HF_HOME, HF_HUB_OFFLINE=1
-
-# 2. Launch local services
-./run.sh
-```
+---
 
 ## 🛠 Model Configuration
 
-Model definitions, OCR pipelines, and LLM parameters are managed in [`backend/setup/init_config.py`](file:///home/lolli/projects/agentic-graphrag/lolly-rag/backend/setup/init_config.py):
+Model definitions, OCR pipelines, and LLM parameters are managed in [`backend/setup/init_config.py`](backend/setup/init_config.py):
 
 | Role                | Default Model / Class                  | Function                                                        |
 | :------------------ | :------------------------------------- | :-------------------------------------------------------------- |
 | **Answer LLM**      | `qwen3.5:4b`                           | Agent reasoning, tool orchestration & answer generation         |
-| **Embedding Model** | `jina-embeddings-v2-base-en`           | 768-dimensional vector embeddings for Neo4j Vector Indexes      |
+| **Embedding Model** | `qwen3-embedding:0.6b`                 | 1024-dimensional vector embeddings for Neo4j Vector Indexes     |
 | **Reranker Model**  | `cross-encoder/ms-marco-MiniLM-L-6-v2` | PyTorch GPU cross-encoder candidate re-scoring                  |
 | **OCR Engine**      | `nvidia/nemotron-ocr-v2`               | Deep learning OCR, layout segmentation & visual text extraction |
 | **Summarizer LLM**  | `qwen3.5:0.8b`                         | Historical chat context condensation & token management         |
-
----
-
-## 🌐 API Reference
-
-### System & Health
-
-* `GET /`: API status welcome message
-* `GET /health`: Health check timestamp
-* `GET /config`: Runtime configuration details (Ollama model, Neo4j status)
-
-### Chat & Users
-
-* `GET /users`: Retrieve all registered users
-* `GET /user/{user_id}/chats`: Retrieve sessions for a specified user
-* `DELETE /user/{user_id}`: Delete user and all associated chat history
-* `GET /chat/{session_id}`: Fetch message history for a session
-* `DELETE /chat/{session_id}`: Delete a specific chat session
-* `POST /repair-sessions`: Repair orphaned messages and missing graph relationships
-* `POST /agent/ask`: Primary agent query endpoint (supports SSE streaming & `attached_files`)
-
-### Document Ingestion & Management
-
-* `POST /ingest/documents`: Upload and chunk documents, spreadsheets, presentations, and images (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.csv`, `.png`, `.jpg`, etc.)
-* `POST /ingest/apoc/csv`: Ingest large CSV files directly using Neo4j APOC
-* `GET /ingest/documents`: List uploaded documents metadata
-* `GET /ingest/documents/{doc_id}/chunks`: Retrieve chunks for a document
-* `PUT /ingest/documents/{doc_id}`: Update document description or folder metadata
-* `DELETE /ingest/documents/{doc_id}`: Delete document and associated chunks
-
-### Analytics & Graph
-
-* `GET /stats/summary`: Database document, user, session, and message metrics
-* `GET /stats/history`: Activity history log
-* `GET /stats/entity_counts`: Entity and relationship type counts
-* `GET /graph/search`: Search knowledge graph nodes
-* `POST /graph/sample`: Graph network topology sample for PyVis visualization
 
 ---
 
