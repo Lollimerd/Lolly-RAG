@@ -18,49 +18,56 @@ from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
-# Supported text & document extensions
 TEXT_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
-MIN_PDF_TEXT_CHARS = 30  # Minimum digital characters before triggering OCR fallback
-
-
-# ---------------------------------------------------------------------------
-# Plain Text & Markdown Loader
-# ---------------------------------------------------------------------------
+MIN_PDF_TEXT_CHARS = 30
 
 def _load_text_or_markdown(file_path: str, filename: str) -> List[Document]:
-    """
-    Load a plain text or markdown file with multi-encoding fallback.
-    Tries utf-8, utf-8-sig, latin1, cp1252, and finally utf-8 with error replacement.
-    """
-    encodings_to_try = ["utf-8", "utf-8-sig", "latin1", "cp1252"]
-    for enc in encodings_to_try:
+    """Args: file_path: File path, filename: File name."""
+    for enc in ["utf-8", "utf-8-sig", "latin1", "cp1252"]:
         try:
-            loader = TextLoader(file_path, encoding=enc)
-            docs = loader.load()
+            docs = TextLoader(file_path, encoding=enc).load()
             for doc in docs:
-                doc.metadata["filename"] = filename
-                doc.metadata["source"] = filename
+                doc.metadata.setdefault("filename", filename)
+                doc.metadata.setdefault("source", filename)
             return docs
         except Exception:
-            continue
-
-    # Fallback to UTF-8 with replacement if all else fails
+            pass
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read()
-        return [
-            Document(
-                page_content=content,
-                metadata={"filename": filename, "source": filename},
-            )
-        ]
+            return [Document(page_content=f.read(), metadata={"filename": filename, "source": filename})]
     except Exception as exc:
         raise ValueError(f"Could not read text/markdown file '{filename}': {exc}") from exc
 
+def _extract_page_ocr(page: Any, engine: Any) -> tuple[list[str], int]:
+    """Args: page: PDF page object, engine: OCR engine."""
+    texts = []
+    images = getattr(page, "images", [])
+    for img in images:
+        data = getattr(img, "data", None)
+        if data:
+            extracted = engine.extract_text(data)
+            if extracted and extracted.strip():
+                texts.append(extracted.strip())
+    return texts, len(images)
 
-# ---------------------------------------------------------------------------
-# PDF Loader with Scanned Image OCR Fallback
-# ---------------------------------------------------------------------------
+def _process_page_ocr(doc: Document, page: Any, engine: Any, filename: str, idx: int, total_pages: int) -> None:
+    """Args: doc: Document object, page: PDF page, engine: OCR engine, filename: File name, idx: Page index, total_pages: Total pages."""
+    try:
+        content = (doc.page_content or "").strip()
+        ocr_texts, img_cnt = _extract_page_ocr(page, engine)
+        if ocr_texts:
+            combined = "\n\n".join(ocr_texts)
+            prefix = f"{content}\n\n" if content else f"# Document: {filename} (Page {idx}/{total_pages})\n"
+            doc.page_content = f"{prefix}### Scanned Content (OCR):\n{combined}"
+            doc.metadata.update({
+                "is_ocr": True,
+                "ocr_engine": getattr(engine, "name", "nemotron-ocr-v2"),
+                "image_count": img_cnt,
+            })
+        elif not content:
+            doc.page_content = f"# Document: {filename} (Page {idx}/{total_pages})\n*(Empty page or graphic objects without readable text)*"
+    except Exception as err:
+        logger.debug("Failed OCR processing on PDF page %d: %s", idx, err)
 
 def _load_pdf_with_ocr(
     file_path: str,
@@ -68,13 +75,7 @@ def _load_pdf_with_ocr(
     ocr_engine: Optional[Any] = None,
     min_text_chars: int = MIN_PDF_TEXT_CHARS,
 ) -> List[Document]:
-    """
-    Load a PDF document into LangChain Documents.
-
-    If pages contain digital selectable text, it extracts them directly.
-    If a page contains sparse or no text (< min_text_chars, e.g. scanned PDFs or image pages),
-    it automatically extracts embedded page images and runs OCR text extraction.
-    """
+    """Args: file_path: PDF path, filename: File name, ocr_engine: Optional OCR engine, min_text_chars: Minimum text threshold."""
     try:
         docs = PyPDFLoader(file_path).load()
     except Exception as exc:
@@ -82,134 +83,54 @@ def _load_pdf_with_ocr(
 
     total_pages = len(docs)
     if total_pages == 0:
-        return [
-            Document(
-                page_content=f"# Document: {filename}\n*(Empty PDF document with no pages)*",
-                metadata={"filename": filename, "source": filename, "total_pages": 0},
-            )
-        ]
+        empty_msg = f"# Document: {filename}\n*(Empty PDF document with no pages)*"
+        return [Document(page_content=empty_msg, metadata={"filename": filename, "source": filename, "total_pages": 0})]
 
-    # Check if any pages need OCR fallback
+    engine, pdf_reader = None, None
     needs_ocr = any(len((d.page_content or "").strip()) < min_text_chars for d in docs)
-
-    engine = None
-    pdf_reader = None
     if needs_ocr:
         try:
             from setup.init_config import ocr_model
             engine = ocr_engine or ocr_model()
         except Exception as ocr_err:
-            logger.debug("Could not initialize OCR model for PDF scanning: %s", ocr_err)
-            engine = None
-
+            logger.debug("Could not init OCR model: %s", ocr_err)
         try:
             from pypdf import PdfReader
             pdf_reader = PdfReader(file_path)
-        except Exception as reader_err:
-            logger.debug("Could not open PdfReader for image extraction: %s", reader_err)
-            pdf_reader = None
+        except Exception as r_err:
+            logger.debug("Could not open PdfReader: %s", r_err)
 
     for idx, doc in enumerate(docs, start=1):
         doc.metadata.setdefault("filename", filename)
-        if not doc.metadata.get("source"):
-            doc.metadata["source"] = f"{filename} (Page {idx}/{total_pages})"
-        doc.metadata["page_number"] = idx
-        doc.metadata["total_pages"] = total_pages
-
+        doc.metadata.setdefault("source", f"{filename} (Page {idx}/{total_pages})")
+        doc.metadata.update({"page_number": idx, "total_pages": total_pages})
         content = (doc.page_content or "").strip()
 
-        # If page is sparse / scanned and OCR is available, extract images and OCR them
-        if len(content) < min_text_chars and engine is not None and pdf_reader is not None:
-            try:
-                page_idx = idx - 1
-                if page_idx < len(pdf_reader.pages):
-                    page = pdf_reader.pages[page_idx]
-                    page_images_ocr = []
-                    image_count = 0
-
-                    if hasattr(page, "images"):
-                        for img in page.images:
-                            image_count += 1
-                            img_data = getattr(img, "data", None)
-                            if img_data:
-                                try:
-                                    ocr_text = engine.extract_text(img_data)
-                                    if ocr_text and ocr_text.strip():
-                                        page_images_ocr.append(ocr_text.strip())
-                                except Exception as img_err:
-                                    logger.debug("OCR failed for image on page %d in '%s': %s", idx, filename, img_err)
-
-                    if page_images_ocr:
-                        ocr_combined = "\n\n".join(page_images_ocr)
-                        if content:
-                            doc.page_content = f"{content}\n\n### Scanned / Image Content (OCR):\n{ocr_combined}"
-                        else:
-                            header = f"# Document: {filename} (Page {idx}/{total_pages})\n"
-                            doc.page_content = f"{header}### Scanned Content (OCR):\n{ocr_combined}"
-
-                        doc.metadata["is_ocr"] = True
-                        doc.metadata["ocr_engine"] = getattr(engine, "name", "nemotron-ocr-v2")
-                        doc.metadata["image_count"] = image_count
-                        logger.info("Extracted OCR text for scanned PDF page %d of '%s'", idx, filename)
-
-                    elif not content:
-                        doc.page_content = (
-                            f"# Document: {filename} (Page {idx}/{total_pages})\n"
-                            "*(Empty page or graphic objects with no readable text detected)*"
-                        )
-            except Exception as page_ocr_err:
-                logger.debug("Failed OCR processing on PDF page %d of '%s': %s", idx, filename, page_ocr_err)
+        if len(content) < min_text_chars and engine and pdf_reader:
+            page_idx = idx - 1
+            if page_idx < len(pdf_reader.pages):
+                _process_page_ocr(doc, pdf_reader.pages[page_idx], engine, filename, idx, total_pages)
 
     logger.info("Loaded %d page(s) from PDF '%s'", len(docs), filename)
     return docs
 
-
-# ---------------------------------------------------------------------------
-# High-Level Document Dispatcher
-# ---------------------------------------------------------------------------
-
-def load_text_document(
-    file_path: str,
-    filename: str,
-    ocr_engine: Optional[Any] = None,
-) -> List[Document]:
-    """
-    Load a text or standard document file (.pdf, .docx, .txt, .md) into LangChain Documents.
-
-    Args:
-        file_path: Absolute or relative filesystem path to the file.
-        filename: Original or canonical filename with extension.
-        ocr_engine: Optional OCR engine instance for scanned PDF fallback.
-
-    Returns:
-        List of Document objects extracted from the file.
-
-    Raises:
-        ValueError: If the file extension is not supported by this processor.
-    """
+def load_text_document(file_path: str, filename: str, ocr_engine: Optional[Any] = None) -> List[Document]:
+    """Args: file_path: Document path, filename: File name, ocr_engine: Optional OCR engine."""
     ext = os.path.splitext(filename)[1].lower()
-
     if ext == ".pdf":
         return _load_pdf_with_ocr(file_path, filename, ocr_engine=ocr_engine)
-
-    elif ext == ".docx":
+    if ext == ".docx":
         try:
             docs = Docx2txtLoader(file_path).load()  # type: ignore[abstract]
             for doc in docs:
                 doc.metadata.setdefault("filename", filename)
-                if not doc.metadata.get("source"):
-                    doc.metadata["source"] = filename
-            logger.info("Loaded DOCX '%s' (%d doc sections)", filename, len(docs))
+                doc.metadata.setdefault("source", filename)
+            logger.info("Loaded DOCX '%s' (%d sections)", filename, len(docs))
             return docs
         except Exception as exc:
             raise ValueError(f"Could not load Word file '{filename}': {exc}") from exc
-
-    elif ext in (".txt", ".md"):
+    if ext in (".txt", ".md"):
         docs = _load_text_or_markdown(file_path, filename)
-        logger.info("Loaded text/markdown file '%s' (%d doc sections)", filename, len(docs))
+        logger.info("Loaded text/markdown file '%s' (%d sections)", filename, len(docs))
         return docs
-
-    else:
-        raise ValueError(
-            f"Unsupported text file type '{ext}'. Supported: {', '.join(sorted(TEXT_EXTENSIONS))}"
-        )
+    raise ValueError(f"Unsupported text file type '{ext}'. Supported: {', '.join(sorted(TEXT_EXTENSIONS))}")

@@ -7,26 +7,21 @@ metadata parsing, folder management, and chunk inspection in the Streamlit front
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 import streamlit as st
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# API Configuration & URLs
-# ---------------------------------------------------------------------------
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 INGEST_DOC_URL = f"{BACKEND_URL}/ingest/documents"
+INGEST_DOC_STREAM_URL = f"{BACKEND_URL}/ingest/documents/stream"
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 SUPPORTED_TYPES: List[str] = [
     "pdf", "docx", "pptx", "ppt", "txt", "md", "csv", "xlsx", "xls",
     "png", "jpg", "jpeg", "webp", "bmp", "tiff",
@@ -50,16 +45,18 @@ FILE_TYPE_INFO: Dict[str, Dict[str, str]] = {
     "tiff": {"icon": "🖼️", "label": "TIFF Image (OCR)", "color": "#38BDF8"},
 }
 
-INITIAL_FOLDERS: List[str] = [
-    "Root",
-]
+INITIAL_FOLDERS: List[str] = ["Root"]
 
+def _engine_for(filename: str, engine: Optional[str]) -> str:
+    """Args: filename: Name of file, engine: Explicit engine or None."""
+    return engine or ("apoc" if filename.lower().endswith(".csv") else "pandas")
 
-# ---------------------------------------------------------------------------
-# API Helper Functions
-# ---------------------------------------------------------------------------
+def _full_desc(folder: str, description: str) -> str:
+    """Args: folder: Folder name, description: Description text."""
+    return f"[{folder}] {description}".strip() if folder and folder != "Root" else (description or "").strip()
+
 def fetch_documents() -> List[Dict[str, Any]]:
-    """Fetch the list of all ingested documents from the backend."""
+    """Args: None."""
     try:
         resp = requests.get(INGEST_DOC_URL, timeout=10)
         resp.raise_for_status()
@@ -69,9 +66,8 @@ def fetch_documents() -> List[Dict[str, Any]]:
         st.error(f"Failed to fetch document list: {exc}")
         return []
 
-
 def fetch_document_chunks(doc_id: str) -> List[Dict[str, Any]]:
-    """Fetch chunks for a specific document."""
+    """Args: doc_id: Document ID."""
     try:
         resp = requests.get(f"{INGEST_DOC_URL}/{doc_id}/chunks", timeout=10)
         resp.raise_for_status()
@@ -80,7 +76,6 @@ def fetch_document_chunks(doc_id: str) -> List[Dict[str, Any]]:
         logger.error("Failed to fetch chunks for doc %s: %s", doc_id, exc)
         return []
 
-
 def upload_file(
     file_bytes: bytes,
     filename: str,
@@ -88,37 +83,59 @@ def upload_file(
     description: str,
     folder: str,
     force: bool = False,
-    engine: str = "pandas",
+    engine: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """POST a file to backend with folder metadata and selected engine."""
-    folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
-    full_description = f"{folder_prefix}{description}".strip()
-
+    """Args: file_bytes: Content bytes, filename: File name, user_id: User ID, description: Doc desc, folder: Folder name, force: Overwrite flag, engine: Engine name."""
     resp = requests.post(
         INGEST_DOC_URL,
         files={"file": (filename, file_bytes, "application/octet-stream")},
-        data={
-            "user_id": user_id,
-            "description": full_description,
-            "force": str(force).lower(),
-            "engine": engine,
-        },
+        data={"user_id": user_id, "description": _full_desc(folder, description), "force": str(force).lower(), "engine": _engine_for(filename, engine)},
         timeout=120,
     )
     resp.raise_for_status()
     return resp.json()
 
+def upload_file_stream(
+    file_bytes: bytes,
+    filename: str,
+    user_id: str,
+    description: str,
+    folder: str,
+    force: bool = False,
+    engine: Optional[str] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Dict[str, Any]:
+    """Args: file_bytes: Content bytes, filename: File name, user_id: User ID, description: Doc desc, folder: Folder name, force: Overwrite flag, engine: Engine name, progress_callback: Progress callback."""
+    engine_name = _engine_for(filename, engine)
+    data = {"user_id": user_id, "description": _full_desc(folder, description), "force": str(force).lower(), "engine": engine_name}
+    resp = requests.post(INGEST_DOC_STREAM_URL, files={"file": (filename, file_bytes, "application/octet-stream")}, data=data, stream=True, timeout=600)
+    if resp.status_code == 404:
+        logger.warning("Streaming endpoint 404; falling back to standard upload")
+        return upload_file(file_bytes, filename, user_id, description, folder, force, engine_name)
+    resp.raise_for_status()
+    final_result: Dict[str, Any] = {"status": "error", "message": "No response"}
+    for raw_line in resp.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8").strip()
+        if line.startswith("data: "):
+            payload = line[6:].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                event = json.loads(payload)
+                if progress_callback:
+                    progress_callback(event)
+                if event.get("type") in ("complete", "error"):
+                    final_result = event
+            except json.JSONDecodeError:
+                pass
+    return final_result
 
 def update_document_metadata(doc_id: str, folder: str, description: str) -> bool:
-    """Update folder/description metadata for a document."""
-    folder_prefix = f"[{folder}] " if folder and folder != "Root" else ""
-    full_description = f"{folder_prefix}{description}".strip()
+    """Args: doc_id: Document ID, folder: Folder name, description: Description."""
     try:
-        resp = requests.put(
-            f"{INGEST_DOC_URL}/{doc_id}",
-            json={"description": full_description},
-            timeout=10,
-        )
+        resp = requests.put(f"{INGEST_DOC_URL}/{doc_id}", json={"description": _full_desc(folder, description)}, timeout=10)
         resp.raise_for_status()
         return resp.json().get("status") == "success"
     except Exception as exc:
@@ -126,9 +143,8 @@ def update_document_metadata(doc_id: str, folder: str, description: str) -> bool
         st.error(f"Failed to update document: {exc}")
         return False
 
-
 def delete_document(doc_id: str) -> bool:
-    """Delete a document and all its chunks from Neo4j."""
+    """Args: doc_id: Document ID."""
     try:
         resp = requests.delete(f"{INGEST_DOC_URL}/{doc_id}", timeout=10)
         resp.raise_for_status()
@@ -138,44 +154,23 @@ def delete_document(doc_id: str) -> bool:
         st.error(f"Failed to delete document: {exc}")
         return False
 
-
 def delete_all_in_folder(files: List[Dict[str, Any]]) -> Tuple[int, int]:
-    """Delete all documents in a given list of files. Returns (succeeded, failed)."""
-    succeeded, failed = 0, 0
-    for doc in files:
-        doc_id = doc.get("id")
-        if doc_id:
-            if delete_document(doc_id):
-                succeeded += 1
-            else:
-                failed += 1
-    return succeeded, failed
-
+    """Args: files: List of doc dicts."""
+    succeeded = sum(1 for d in files if d.get("id") and delete_document(d["id"]))
+    return succeeded, len(files) - succeeded
 
 def parse_folder(description: Optional[str]) -> Tuple[str, str]:
-    """Extract folder name from description if prefixed like '[Folder] rest of desc'."""
+    """Args: description: Raw document description."""
     desc = (description or "").strip()
     if desc.startswith("[") and "]" in desc:
-        end_idx = desc.index("]")
-        folder = desc[1:end_idx].strip()
-        clean_desc = desc[end_idx + 1 :].strip()
-        return folder or "Root", clean_desc
+        idx = desc.index("]")
+        return desc[1:idx].strip() or "Root", desc[idx + 1:].strip()
     return "Root", desc
 
-
 def get_all_folders(docs: List[Dict[str, Any]]) -> List[str]:
-    """Return sorted unique list of all folders (discovered + custom added in session)."""
+    """Args: docs: Ingested document records."""
     if "custom_folders" not in st.session_state:
         st.session_state["custom_folders"] = list(INITIAL_FOLDERS)
-
-    # Collect folders discovered from existing documents
-    discovered = {f for doc in docs for f, _ in [parse_folder(doc.get("description", ""))]}
-
-    # Union with session custom folders
-    all_f = set(st.session_state["custom_folders"]).union(discovered)
-    if "Root" not in all_f:
-        all_f.add("Root")
-
-    # Return with 'Root' first, then alphabetical
-    others = sorted([f for f in all_f if f != "Root"])
-    return ["Root"] + others
+    discovered = {parse_folder(doc.get("description", ""))[0] for doc in docs}
+    all_f = set(st.session_state["custom_folders"]) | discovered | {"Root"}
+    return ["Root"] + sorted(f for f in all_f if f != "Root")

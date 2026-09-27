@@ -19,7 +19,7 @@ flowchart TD
         Agent["agents/agent.py (Autonomous RAG Agent)"]
         Tools["tools/document_search.py\n(Hybrid Vector + Fulltext Search)"]
         Memory["utils/memory.py (Neo4j Session & User Memory)"]
-        DocProc["utils/doc_processor.py\n(Document Pipeline Orchestrator)"]
+        DocProc["tools/doc_processor.py\n(Document Pipeline Orchestrator)"]
         MediaProc["utils/media_processor.py\n(Nemotron OCR & PPTX Loader)"]
         TabularProc["utils/tabular_processor.py\n(CSV & Excel / APOC Ingestion)"]
         TextProc["utils/text_processor.py\n(PDF, Word, Markdown, TXT)"]
@@ -88,10 +88,10 @@ lolly-rag/
 │   ├── setup/
 │   │   └── init_config.py        # Ollama LLM, Nemotron OCR v2 & Neo4j vector configs
 │   ├── tools/
+│   │   ├── doc_processor.py      # Main document ingestion & dispatch orchestrator
 │   │   └── document_search.py    # Multi-index hybrid search & Cross-Encoder reranking
 │   ├── utils/
 │   │   ├── dashboard.py          # Neo4j query helpers & graph statistics
-│   │   ├── doc_processor.py      # Main document ingestion & dispatch orchestrator
 │   │   ├── media_processor.py    # PowerPoint (.pptx) & Nemotron OCR image loaders
 │   │   ├── tabular_processor.py  # CSV & Excel (.xlsx, .xls) chunking & APOC ingestion
 │   │   ├── text_processor.py     # PDF (with OCR fallback), DOCX, MD & TXT loaders

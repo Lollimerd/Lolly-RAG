@@ -1,17 +1,13 @@
-import html
-import streamlit as st
 import json
 import logging
 import os
-import requests
 from typing import List
-from datetime import datetime
+import requests
+import streamlit as st
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- API Configuration ---
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 CONFIG_URL = f"{BACKEND_URL}/config"
 CHATS_URL = f"{BACKEND_URL}/user"
@@ -19,256 +15,124 @@ CHAT_HISTORY_URL = f"{BACKEND_URL}/chat"
 USERS_URL = f"{BACKEND_URL}/users"
 AGENT_URL = f"{BACKEND_URL}/agent/ask"
 
-
-# --- API Helper Functions with Error Handling ---
 def fetch_all_users(retry_count=2):
-    """Fetch all users with retry logic."""
-    for attempt in range(retry_count):
+    """Args: retry_count: Number of retries."""
+    for _ in range(retry_count):
         try:
-            response = requests.get(USERS_URL, timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("status") == "success":
-                return data.get("users", [])
-            return []
-        except requests.exceptions.Timeout:
-            if attempt < retry_count - 1:
-                st.warning("Connection timeout, retrying...")
-                continue
-            logger.error(f"Timeout fetching users after {retry_count} attempts")
-            return []
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching users: {e}")
-            if attempt < retry_count - 1:
-                continue
-            return []
+            res = requests.get(USERS_URL, timeout=5)
+            if res.ok and (d := res.json()).get("status") == "success": return d.get("users", [])
+        except requests.exceptions.RequestException as e: logger.error("Error fetching users: %s", e)
     return []
-
 
 def delete_chat_api(session_id):
-    """Delete a chat session."""
-    try:
-        requests.delete(f"{CHAT_HISTORY_URL}/{session_id}", timeout=5)
-        logger.info(f"Chat {session_id} deleted")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error deleting chat {session_id}: {e}")
-        st.warning(f"Could not delete chat: {str(e)[:50]}")
-
+    """Args: session_id: Session ID."""
+    try: requests.delete(f"{CHAT_HISTORY_URL}/{session_id}", timeout=5)
+    except requests.exceptions.RequestException as e: st.warning(f"Could not delete chat: {str(e)[:50]}")
 
 def delete_user_api(user_id):
-    """Delete a user and all their data."""
-    try:
-        requests.delete(f"{BACKEND_URL}/user/{user_id}/", timeout=5)
-        logger.info(f"User {user_id} deleted")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error deleting user {user_id}: {e}")
-        st.warning(f"Could not delete user: {str(e)[:50]}")
-
+    """Args: user_id: User ID."""
+    try: requests.delete(f"{BACKEND_URL}/user/{user_id}/", timeout=5)
+    except requests.exceptions.RequestException as e: st.warning(f"Could not delete user: {str(e)[:50]}")
 
 def fetch_user_chats(user_id, retry_count=2):
-    """Fetch user's chat sessions with retry logic."""
-    for attempt in range(retry_count):
+    """Args: user_id: User ID, retry_count: Number of retries."""
+    for _ in range(retry_count):
         try:
-            response = requests.get(f"{CHATS_URL}/{user_id}/chats", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("status") == "success":
-                return data.get("chats", [])
-            return []
-        except requests.exceptions.Timeout:
-            if attempt < retry_count - 1:
-                continue
-            logger.error(f"Timeout fetching chats for user {user_id}")
-            return []
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching chats for user {user_id}: {e}")
-            if attempt < retry_count - 1:
-                continue
-            return []
+            res = requests.get(f"{CHATS_URL}/{user_id}/chats", timeout=5)
+            if res.ok and (d := res.json()).get("status") == "success": return d.get("chats", [])
+        except requests.exceptions.RequestException as e: logger.error("Error fetching chats: %s", e)
     return []
-
 
 def fetch_chat_history(session_id, retry_count=2):
-    """Fetch chat history with retry logic."""
-    for attempt in range(retry_count):
+    """Args: session_id: Session ID, retry_count: Number of retries."""
+    for _ in range(retry_count):
         try:
-            response = requests.get(f"{CHAT_HISTORY_URL}/{session_id}", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("status") == "success":
-                messages = data.get("messages", [])
-                # Validate messages have required fields
-                validated = []
-                for msg in messages:
-                    if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                        validated.append(msg)
-                return validated
-            return []
-        except requests.exceptions.Timeout:
-            if attempt < retry_count - 1:
-                continue
-            logger.error(f"Timeout fetching history for {session_id}")
-            return []
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching history for {session_id}: {e}")
-            if attempt < retry_count - 1:
-                continue
-            return []
+            res = requests.get(f"{CHAT_HISTORY_URL}/{session_id}", timeout=5)
+            if res.ok and (d := res.json()).get("status") == "success":
+                return [m for m in d.get("messages", []) if isinstance(m, dict) and "role" in m and "content" in m]
+        except requests.exceptions.RequestException as e: logger.error("Error fetching history: %s", e)
     return []
 
-
 def extract_title_and_question(input_string):
-    lines = input_string.strip().split("\n")
-    title = ""
-    question = ""
-    is_question = False  # flag to know if we are inside a "Question" block
-
-    for line in lines:
-        if line.startswith("Title:"):
-            title = line.split("Title: ", 1)[1].strip()
-        elif line.startswith("Question:"):
-            question = line.split("Question: ", 1)[1].strip()
-            is_question = (
-                True  # set the flag to True once we encounter a "Question:" line
-            )
-        elif is_question:
-            # if the line does not start with "Question:" but we are inside a "Question" block,
-            # then it is a continuation of the question
-            question += "\n" + line.strip()
-
+    """Args: input_string: Input text."""
+    title, question, is_q = "", "", False
+    for line in input_string.strip().split("\n"):
+        if line.startswith("Title:"): title = line.split("Title: ", 1)[1].strip()
+        elif line.startswith("Question:"): question = line.split("Question: ", 1)[1].strip(); is_q = True
+        elif is_q: question += "\n" + line.strip()
     return title, question
 
-
 def format_docs(docs):
+    """Args: docs: Document list."""
     return "\n\n".join(doc.page_content for doc in docs)
 
-# This is a placeholder for LangChain's Document class
 class Document:
+    """Placeholder for LangChain's Document class."""
     def __init__(self, page_content: str, metadata: dict):
-        self.page_content = page_content
-        self.metadata = metadata
+        """Args: page_content: Text content, metadata: Metadata dictionary."""
+        self.page_content, self.metadata = page_content, metadata
 
 def format_docs_with_metadata(docs: List[Document]) -> str:
-    """
-    Formats a list of Documents into a single string, where each
-    document's page_content is followed by its corresponding metadata.
-    """
-    # Create a list of formatted strings, one for each document
-    formatted_blocks = []
-    for doc in docs:
-        # Format the metadata as a pretty JSON string
-        metadata_str = json.dumps(doc.metadata, indent=2)
+    """Args: docs: Document list."""
+    blocks = [f"Content: \n{doc.page_content}\n--- METADATA ---\n{json.dumps(doc.metadata, indent=2)}" for doc in docs]
+    return "\n\n======================================================\n\n".join(blocks)
 
-        # Create a combined block for the document's content and its metadata
-        block = f"Content: \n{doc.page_content}\n--- METADATA ---\n{metadata_str}"
-        formatted_blocks.append(block)
-
-    # Join all the individual document blocks with a clear separator
-    return "\n\n======================================================\n\n".join(
-        formatted_blocks
-    )
-
-# --- 🆕 Function to fetch and display container name ---
 def display_container_name():
-    """Fetches and displays the Neo4j container name in the sidebar."""
+    """Args: None."""
     try:
         with st.sidebar:
             with st.spinner("Connecting to database..."):
-                response = requests.get(CONFIG_URL, timeout=4)
-                response.raise_for_status()
-                data = response.json()
-                container_name = data.get("container_name", "N/A")
-                st.success(f"DB: **{container_name}**", icon=":material/database:")
+                res = requests.get(CONFIG_URL, timeout=4)
+                name = res.json().get("container_name", "N/A") if res.ok else "N/A"
+                st.success(f"DB: **{name}**", icon=":material/database:")
     except requests.exceptions.RequestException:
         st.sidebar.error("Database connection offline", icon=":material/error:")
 
-
-# --- Config Func ---
 def get_system_config():
-    """Fetches configuration from the backend API."""
+    """Args: None."""
     try:
-        response = requests.get(CONFIG_URL)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        return response.json()
+        res = requests.get(CONFIG_URL)
+        return res.json() if res.ok else None
     except requests.exceptions.RequestException as e:
-        print(f"Could not fetch config: {e}")
-        return None  # Return None on failure
-
+        logger.error("Could not fetch config: %s", e)
+        return None
 
 def get_database_summary():
-    """Get summary statistics from the database via API."""
+    """Args: None."""
     try:
-        response = requests.get(f"{BACKEND_URL}/stats/summary")
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error fetching DB summary: {e}")
-
-    return {
-        "total_documents": 0,
-        "total_chunks": 0,
-        "total_users": 0,
-        "total_sessions": 0,
-        "total_messages": 0,
-    }
-
+        res = requests.get(f"{BACKEND_URL}/stats/summary")
+        if res.ok: return res.json()
+    except Exception as e: logger.error("Error fetching DB summary: %s", e)
+    return {"total_documents": 0, "total_chunks": 0, "total_users": 0, "total_sessions": 0, "total_messages": 0}
 
 def get_import_history(limit: int = 20):
-    """Get recent import history from API."""
+    """Args: limit: Maximum entries."""
     try:
-        response = requests.get(
-            f"{BACKEND_URL}/stats/history", params={"limit": limit}
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error fetching import history: {e}")
+        res = requests.get(f"{BACKEND_URL}/stats/history", params={"limit": limit})
+        if res.ok: return res.json()
+    except Exception as e: logger.error("Error fetching history: %s", e)
     return []
-
 
 def get_entity_counts():
-    """Get counts for all entity types from API."""
+    """Args: None."""
     try:
-        response = requests.get(f"{BACKEND_URL}/stats/entity_counts")
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error fetching entity counts: {e}")
+        res = requests.get(f"{BACKEND_URL}/stats/entity_counts")
+        if res.ok: return res.json()
+    except Exception as e: logger.error("Error fetching entity counts: %s", e)
     return {"nodes": {}, "relationships": {}}
 
-
 def search_nodes(search_term: str, limit: int = 10):
-    """Search for nodes by title, name, or display_name via API."""
+    """Args: search_term: Search query, limit: Maximum matches."""
     try:
-        response = requests.get(
-            f"{BACKEND_URL}/graph/search",
-            params={"term": search_term, "limit": limit},
-        )
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error searching nodes: {e}")
+        res = requests.get(f"{BACKEND_URL}/graph/search", params={"term": search_term, "limit": limit})
+        if res.ok: return res.json()
+    except Exception as e: logger.error("Error searching nodes: %s", e)
     return []
 
-
-def get_graph_sample(
-    node_types: list,
-    rel_types: list,
-    limit: int = 50,
-    focus_node_id: str = "",
-):
-    """Fetch a sample of nodes and relationships for visualization via API."""
+def get_graph_sample(node_types: list, rel_types: list, limit: int = 50, focus_node_id: str = ""):
+    """Args: node_types: Node types, rel_types: Relationship types, limit: Max elements, focus_node_id: Root node ID."""
     try:
-        payload = {
-            "node_types": node_types,
-            "rel_types": rel_types,
-            "limit": limit,
-            "focus_node_id": focus_node_id,
-        }
-        response = requests.post(f"{BACKEND_URL}/graph/sample", json=payload)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error fetching graph sample: {e}")
-
+        res = requests.post(f"{BACKEND_URL}/graph/sample", json={"node_types": node_types, "rel_types": rel_types, "limit": limit, "focus_node_id": focus_node_id})
+        if res.ok: return res.json()
+    except Exception as e: logger.error("Error fetching graph sample: %s", e)
     return {"nodes": [], "edges": []}
